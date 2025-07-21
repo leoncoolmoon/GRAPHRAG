@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GraphRAG 知识库管理系统</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+        }
+
+        .header h1 {
+            font-size: 3rem;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .card {
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            padding: 30px;
+            margin-bottom: 30px;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 20px 40px rgba(0,0,0,0.15);
+        }
+
+        .tabs {
+            display: flex;
+            margin-bottom: 30px;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .tab {
+            flex: 1;
+            padding: 15px 20px;
+            background: #f8f9fa;
+            border: none;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .tab.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .tab:hover:not(.active) {
+            background: #e9ecef;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+            animation: fadeIn 0.5s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .form-group {
+            margin-bottom: 25px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #555;
+        }
+
+        .form-control {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .form-control:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        textarea.form-control {
+            min-height: 120px;
+            resize: vertical;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 16px;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn-secondary {
+            background: linear-gradient(135deg, #6c757d 0%, #495057 100%);
+        }
+
+        .file-upload {
+            border: 2px dashed #667eea;
+            border-radius: 10px;
+            padding: 40px;
+            text-align: center;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+
+        .file-upload:hover {
+            border-color: #764ba2;
+            background: rgba(102, 126, 234, 0.05);
+        }
+
+        .file-upload.dragover {
+            border-color: #764ba2;
+            background: rgba(102, 126, 234, 0.1);
+        }
+
+        .query-result {
+            margin-top: 30px;
+            padding: 25px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            border-left: 5px solid #667eea;
+        }
+
+        .answer {
+            font-size: 18px;
+            line-height: 1.8;
+            margin-bottom: 20px;
+            color: #2c3e50;
+        }
+
+        .sources {
+            margin-top: 20px;
+        }
+
+        .source-item {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            transition: transform 0.2s ease;
+        }
+
+        .source-item:hover {
+            transform: translateX(5px);
+        }
+
+        .similarity-score {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-bottom: 8px;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .status {
+            padding: 10px 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+            font-weight: 500;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .graph-container {
+            margin-top: 20px;
+            padding: 20px;
+            background: white;
+            border-radius: 10px;
+            border: 1px solid #e9ecef;
+        }
+
+        .node {
+            fill: #667eea;
+            stroke: #fff;
+            stroke-width: 2px;
+        }
+
+        .link {
+            stroke: #999;
+            stroke-opacity: 0.6;
+            stroke-width: 2px;
+        }
+
+        .node-label {
+            font-size: 12px;
+            fill: #333;
+            text-anchor: middle;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 GraphRAG 知识库</h1>
+            <p>基于Ollama的智能知识管理系统</p>
+        </div>
+
+        <div class="card">
+            <div class="tabs">
+                <button class="tab active" onclick="showTab('upload')">📁 文档管理</button>
+                <button class="tab" onclick="showTab('query')">🔍 智能查询</button>
+                <button class="tab" onclick="showTab('stats')">📈 统计信息</button>
+            </div>
+
+            <!-- 文档上传标签页 -->
+            <div id="upload" class="tab-content active">
+                <h2>📝 添加文档</h2>
+                
+                <!-- 文本输入方式 -->
+                <div class="form-group">
+                    <label for="docTitle">文档标题</label>
+                    <input type="text" id="docTitle" class="form-control" placeholder="输入文档标题...">
+                </div>
+                
+                <div class="form-group">
+                    <label for="docContent">文档内容</label>
+                    <textarea id="docContent" class="form-control" placeholder="输入文档内容或粘贴文本..."></textarea>
+                </div>
+                
+                <button class="btn" onclick="addDocument()">
+                    <span id="addDocLoading" class="loading" style="display: none;"></span>
+                    添加文档
+                </button>
+
+                <hr style="margin: 30px 0;">
+
+                <!-- 文件上传方式 -->
+                <h3>📎 或上传文件</h3>
+                <div class="file-upload" id="fileUpload" onclick="document.getElementById('fileInput').click()">
+                    <input type="file" id="fileInput" style="display: none;" onchange="uploadFile()" accept=".txt,.md,.json">
+                    <p>点击选择文件或拖拽文件到此处</p>
+                    <p style="color: #666; font-size: 14px;">支持 .txt, .md, .json 格式</p>
+                </div>
+
+                <div id="uploadStatus"></div>
+            </div>
+
+            <!-- 查询标签页 -->
+            <div id="query" class="tab-content">
+                <h2>🤖 智能问答</h2>
+                
+                <div class="form-group">
+                    <label for="queryInput">输入您的问题</label>
+                    <textarea id="queryInput" class="form-control" placeholder="请输入您想了解的问题..." rows="3"></textarea>
+                </div>
+                
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="includeGraph" checked>
+                        包含知识图谱信息
+                    </label>
+                </div>
+                
+                <button class="btn" onclick="queryKnowledgeBase()">
+                    <span id="queryLoading" class="loading" style="display: none;"></span>
+                    提交查询
+                </button>
+                
+                <div id="queryResult"></div>
+            </div>
+
+            <!-- 统计标签页 -->
+            <div id="stats" class="tab-content">
+                <h2>📊 系统统计</h2>
+                <p>显示知识库的统计信息和健康状态</p>
+                
+                <button class="btn btn-secondary" onclick="checkHealth()">
+                    <span id="healthLoading" class="loading" style="display: none;"></span>
+                    检查系统状态
+                </button>
+                
+                <div id="healthResult"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000/api';
+
+        // 标签页切换
+        function showTab(tabName) {
+            // 隐藏所有标签页内容
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.remove('active');
+            });
+            
+            // 移除所有标签按钮的active状态
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // 显示目标标签页
+            document.getElementById(tabName).classList.add('active');
+            event.target.classList.add('active');
+        }
+
+        // 文件拖拽处理
+        const fileUpload = document.getElementById('fileUpload');
+        
+        fileUpload.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            fileUpload.classList.add('dragover');
+        });
+        
+        fileUpload.addEventListener('dragleave', () => {
+            fileUpload.classList.remove('dragover');
+        });
+        
+        fileUpload.addEventListener('drop', (e) => {
+            e.preventDefault();
+            fileUpload.classList.remove('dragover');
+            
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                handleFileUpload(files[0]);
+            }
+        });
+
+        // 添加文档
+        async function addDocument() {
+            const title = document.getElementById('docTitle').value;
+            const content = document.getElementById('docContent').value;
+            
+            if (!title || !content) {
+                showStatus('请填写标题和内容', 'error');
+                return;
+            }
+
+            const loading = document.getElementById('addDocLoading');
+            loading.style.display = 'inline-block';
+
+            try {
+                const response = await fetch(`${API_BASE}/documents/add`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        title: title,
+                        content: content,
+                        metadata: {
+                            created_at: new Date().toISOString(),
+                            source: 'manual_input'
+                        }
+                    })
+                });
+
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showStatus(`文档添加成功！文档ID: ${result.doc_id}`, 'success');
+                    // 清空表单
+                    document.getElementById('docTitle').value = '';
+                    document.getElementById('docContent').value = '';
+                } else {
+                    showStatus(`添加失败: ${result.detail}`, 'error');
+                }
+            } catch (error) {
+                showStatus(`网络错误: ${error.message}`, 'error');
+            } finally {
+                loading.style.display = 'none';
+            }
+        }
+
+        // 上传文件
+        async function uploadFile() {
+            const fileInput = document.getElementById('fileInput');
+            const file = fileInput.files[0];
+            
+            if (!file) return;
+            
+            await handleFileUpload(file);
+        }
+
+        async function handleFileUpload(file) {
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                showStatus('正在上传文件...', 'info');
+                
+                const response = await fetch(`${API_BASE}/documents/upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showStatus(`文件上传成功！文档ID: ${result.doc_id}`, 'success');
+                    document.getElementById('fileInput').value = '';
+                } else {
+                    showStatus(`上传失败: ${result.detail}`, 'error');
+                }
+            } catch (error) {
+                showStatus(`上传错误: ${error.message}`, 'error');
+            }
+        }
+
+        // 查询知识库
+        async function queryKnowledgeBase() {
+            const query = document.getElementById('queryInput').value;
+            const includeGraph = document.getElementById('includeGraph').checked;
+            
+            if (!query.trim()) {
+                showStatus('请输入查询问题', 'error');
+                return;
+            }
+
+            const loading = document.getElementById('queryLoading');
+            const resultDiv = document.getElementById('queryResult');
+            
+            loading.style.display = 'inline-block';
+            resultDiv.innerHTML = '';
+
+            try {
+                const response = await fetch(`${API_BASE}/query`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        query: query,
+                        limit: 5,
+                        include_graph: includeGraph
+                    })
+                });
+
+                const result = await response.json();
+                
+                if (response.ok) {
+                    displayQueryResult(result);
+                } else {
+                    showStatus(`查询失败: ${result.detail}`, 'error');
+                }
+            } catch (error) {
+                showStatus(`查询错误: ${error.message}`, 'error');
+            } finally {
+                loading.style.display = 'none';
+            }
+        }
+
+        // 显示查询结果
+        function displayQueryResult(result) {
+            const resultDiv = document.getElementById('queryResult');
+            
+            let html = `
+                <div class="query-result">
+                    <h3>🤖 AI回答</h3>
+                    <div class="answer">${result.answer}</div>
+                    
+                    <h4>📚 参考来源</h4>
+                    <div class="sources">
+            `;
+            
+            if (result.sources && result.sources.length > 0) {
+                result.sources.forEach((source, index) => {
+                    const similarity = source.similarity ? (source.similarity * 100).toFixed(1) : 'N/A';
+                    html += `
+                        <div class="source-item">
+                            <div class="similarity-score">相似度: ${similarity}%</div>
+                            <div class="source-content">${source.content.substring(0, 200)}...</div>
+                        </div>
+                    `;
+                });
+            } else {
+                html += '<p>没有找到相关来源</p>';
+            }
+            
+            html += '</div>';
+            
+            // 如果包含图谱信息
+            if (result.graph && result.graph.length > 0) {
+                html += `
+                    <h4>🕸️ 知识图谱</h4>
+                    <div class="graph-container" id="graphContainer">
+                        <div id="graphVisualization"></div>
+                    </div>
+                `;
+            }
+            
+            html += '</div>';
+            resultDiv.innerHTML = html;
+            
+            // 如果有图谱数据，渲染图谱
+            if (result.graph && result.graph.length > 0) {
+                renderGraph(result.graph);
+            }
+        }
+
+        // 渲染知识图谱
+        function renderGraph(graphData) {
+            const container = document.getElementById('graphVisualization');
+            container.innerHTML = '';
+            
+            // 提取节点和边
+            const nodes = new Set();
+            const links = [];
+            
+            graphData.forEach(item => {
+                nodes.add(item.source);
+                nodes.add(item.target);
+                links.push({
+                    source: item.source,
+                    target: item.target,
+                    relationship: item.relationship
+                });
+            });
+            
+            const nodeArray = Array.from(nodes).map(name => ({ id: name, name: name }));
+            
+            // 简单的图谱可视化
+            let graphHtml = '<div style="display: flex; flex-wrap: wrap; gap: 20px;">';
+            
+            links.forEach(link => {
+                graphHtml += `
+                    <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #dee2e6;">
+                        <strong>${link.source}</strong> 
+                        <span style="color: #667eea;">—— ${link.relationship} ——</span> 
+                        <strong>${link.target}</strong>
+                    </div>
+                `;
+            });
+            
+            graphHtml += '</div>';
+            container.innerHTML = graphHtml;
+        }
+
+        // 检查系统健康状态
+        async function checkHealth() {
+            const loading = document.getElementById('healthLoading');
+            const resultDiv = document.getElementById('healthResult');
+            
+            loading.style.display = 'inline-block';
+
+            try {
+                const response = await fetch(`${API_BASE}/health`);
+                const result = await response.json();
+                
+                if (response.ok) {
+                    resultDiv.innerHTML = `
+                        <div class="status success">
+                            <h3>✅ 系统状态正常</h3>
+                            <p>服务器时间: ${new Date(result.timestamp).toLocaleString()}</p>
+                            <p>状态: ${result.status}</p>
+                        </div>
+                    `;
+                } else {
+                    resultDiv.innerHTML = `
+                        <div class="status error">
+                            <h3>❌ 系统异常</h3>
+                            <p>请检查后端服务是否正常运行</p>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `
+                    <div class="status error">
+                        <h3>❌ 连接失败</h3>
+                        <p>无法连接到后端服务: ${error.message}</p>
+                        <p>请确保后端服务在 ${API_BASE} 运行</p>
+                    </div>
+                `;
+            } finally {
+                loading.style.display = 'none';
+            }
+        }
+
+        // 显示状态消息
+        function showStatus(message, type) {
+            const statusDiv = document.getElementById('uploadStatus');
+            statusDiv.innerHTML = `<div class="status ${type}">${message}</div>`;
+            
+            // 3秒后自动消失
+            setTimeout(() => {
+                statusDiv.innerHTML = '';
+            }, 3000);
+        }
+
+        // 回车键提交查询
+        document.getElementById('queryInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter' && e.ctrlKey) {
+                queryKnowledgeBase();
+            }
+        });
+
+        // 页面加载完成后检查系统状态
+        document.addEventListener('DOMContentLoaded', function() {
+            // 自动检查健康状态
+            setTimeout(checkHealth, 1000);
+        });
+
+        // 添加一些示例提示
+        const exampleQueries = [
+            "这个文档主要讲了什么？",
+            "有哪些重要的概念和术语？", 
+            "文档中提到了哪些关键人物？",
+            "有什么重要的结论或观点？"
+        ];
+
+        function showExampleQuery() {
+            const randomQuery = exampleQueries[Math.floor(Math.random() * exampleQueries.length)];
+            document.getElementById('queryInput').placeholder = `例如: ${randomQuery}`;
+        }
+
+        // 定时更换示例查询
+        setInterval(showExampleQuery, 3000);
+        showExampleQuery();
+    </script>
+</body>
+</html>
