@@ -504,6 +504,16 @@ app.add_middleware(
 # 静态文件服务
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# 添加管理页面路由
+@app.get("/manage")
+async def manage_page():
+    return FileResponse("static/manage.html")
+
+# 添加管理页面路由
+@app.get("/manage_old")
+async def manage_old_page():
+    return FileResponse("static/manage_old.html")
+
 # 初始化GraphRAG
 graph_rag = None
 
@@ -520,6 +530,11 @@ async def startup_event():
 async def read_root():
     """主页"""
     return FileResponse("static/index.html")
+
+@app.get("/style.css")
+async def read_css():
+    """css"""
+    return FileResponse("static/style.css")
 
 @app.post("/api/documents/add")
 async def add_document(document: DocumentInput):
@@ -615,7 +630,188 @@ async def get_stats():
     except Exception as e:
         logger.error(f"获取统计信息失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+# 新增数据模型
+class DeleteDocumentInput(BaseModel):
+    doc_id: str
 
+class ResetDatabaseInput(BaseModel):
+    confirm: bool
+
+# 新增API接口
+@app.get("/api/documents/list")
+async def list_documents(page: int = 1, per_page: int = 10, search: str = ""):
+    """获取文档列表（分页+搜索）"""
+    if not graph_rag or not graph_rag.neo4j_manager:
+        raise HTTPException(status_code=500, detail="系统未初始化")
+    
+    try:
+        skip = (page - 1) * per_page
+        query = """
+            MATCH (d:Document)
+            WHERE $search = "" OR d.title CONTAINS $search OR d.content CONTAINS $search
+            RETURN d.id as id, d.title as title, 
+                   substring(d.content, 0, 100) as preview,
+                   d.created_at as created_at
+            ORDER BY d.created_at DESC
+            SKIP $skip LIMIT $limit
+        """
+        with graph_rag.neo4j_manager.driver.session() as session:
+            result = session.run(query, search=search, skip=skip, limit=per_page)
+            documents = [dict(record) for record in result]
+            
+            # 获取总数
+            count_result = session.run(
+                "MATCH (d:Document) RETURN count(d) as total"
+            )
+            t = count_result.single()
+            total = t["total"] if t else 0
+            
+        return {
+            "documents": documents,
+            "total": total,
+            "page": page,
+            "per_page": per_page
+        }
+    except Exception as e:
+        logger.error(f"文档列表获取失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/documents/delete")
+async def delete_document(data: DeleteDocumentInput):
+    """删除文档及其所有关联数据"""
+    if not graph_rag or not graph_rag.neo4j_manager:
+        raise HTTPException(status_code=500, detail="系统未初始化")
+    
+    try:
+        with graph_rag.neo4j_manager.driver.session() as session:
+            # 删除文档及其所有关联节点
+            session.run(
+                """
+                MATCH (d:Document {id: $doc_id})
+                OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk)
+                OPTIONAL MATCH (d)-[:CONTAINS_ENTITY]->(e:Entity)
+                DETACH DELETE d, c, e
+                """,
+                doc_id=data.doc_id
+            )
+        return {"success": True, "message": "文档已删除"}
+    except Exception as e:
+        logger.error(f"文档删除失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/database/reset")
+async def reset_database(data: ResetDatabaseInput):
+    """清空整个数据库（危险操作）"""
+    if not data.confirm:
+        raise HTTPException(status_code=400, detail="需要确认参数")
+    
+    try:
+        if graph_rag and graph_rag.neo4j_manager:
+            with graph_rag.neo4j_manager.driver.session() as session:
+                session.run("MATCH (n) DETACH DELETE n")
+            return {"success": True, "message": "数据库已重置"}
+    except Exception as e:
+        logger.error(f"数据库重置失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/graph/visualization")
+async def get_visualization_data(limit: int = 50):
+    """获取可视化图数据"""
+    try:
+        if graph_rag and graph_rag.neo4j_manager:
+            with graph_rag.neo4j_manager.driver.session() as session:
+                # 获取文档-实体-关系的子图
+                result = session.run(
+                    """
+                    MATCH (d:Document)-[:HAS_CHUNK]->(c:Chunk)
+                    OPTIONAL MATCH (d)-[:CONTAINS_ENTITY]->(e:Entity)
+                    OPTIONAL MATCH (e1:Entity)-[r:RELATED]->(e2:Entity)
+                    WITH d, c, e, e1, r, e2
+                    LIMIT $limit
+                    RETURN {
+                        nodes: COLLECT(DISTINCT {
+                            id: d.id, 
+                            label: d.title, 
+                            type: 'document'
+                        }) + 
+                        COLLECT(DISTINCT {
+                            id: e.name, 
+                            label: e.name, 
+                            type: e.type
+                        }),
+                        links: COLLECT(DISTINCT {
+                            source: d.id,
+                            target: e.name,
+                            type: "CONTAINS"
+                        }) +
+                        COLLECT(DISTINCT {
+                            source: e1.name,
+                            target: e2.name,
+                            type: r.type
+                        })
+                    } as graph
+                    """,
+                    limit=limit
+                )
+                r = result.single()
+                return r["graph"] if r else None
+    except Exception as e:
+        logger.error(f"图数据获取失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/graph/3d-visualization")
+async def get_3d_visualization_data(limit: int = 50):
+    """获取3D可视化数据"""
+    try:
+        if graph_rag and graph_rag.neo4j_manager:
+            with graph_rag.neo4j_manager.driver.session() as session:
+                # 获取文档、实体和关系数据
+                result = session.run(
+                    """
+                    MATCH (d:Document)-[:HAS_CHUNK]->(c:Chunk)
+                    OPTIONAL MATCH (d)-[:CONTAINS_ENTITY]->(e:Entity)
+                    OPTIONAL MATCH (e1:Entity)-[r:RELATED]->(e2:Entity)
+                    WITH d, c, e, e1, r, e2
+                    LIMIT $limit
+                    RETURN {
+                        nodes: COLLECT(DISTINCT {
+                            id: d.id, 
+                            name: d.title,
+                            type: 'document',
+                            size: 5,
+                            color: 0x667eea
+                        }) + 
+                        COLLECT(DISTINCT {
+                            id: e.name, 
+                            name: e.name,
+                            type: e.type,
+                            size: 3,
+                            color: CASE e.type
+                                WHEN 'person' THEN 0xF5B7B1
+                                WHEN 'location' THEN 0xA9DFBF
+                                ELSE 0x764ba2
+                            END
+                        }),
+                        links: COLLECT(DISTINCT {
+                            source: d.id,
+                            target: e.name,
+                            strength: 0.5
+                        }) +
+                        COLLECT(DISTINCT {
+                            source: e1.name,
+                            target: e2.name,
+                            strength: 0.8
+                        })
+                    } as graph
+                    """,
+                    limit=limit
+                )
+                r = result.single()
+                return r["graph"] if r else None
+    except Exception as e:
+        logger.error(f"3D图数据获取失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
 if __name__ == "__main__":
     import uvicorn
     print("启动GraphRAG知识库系统...")

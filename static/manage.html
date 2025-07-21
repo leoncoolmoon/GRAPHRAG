@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>GraphRAG 知识库管理系统</title>
+    <script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.2/dist/vis-network.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+        <style>
+        #graph-container {
+            width: 100%;
+            height: 500px;
+            border: 1px solid #ddd;
+            margin-top: 20px;
+        }
+        .document-card {
+            transition: all 0.3s;
+        }
+        .document-card:hover {
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+        .entity-badge {
+            font-size: 0.8em;
+            margin-right: 5px;
+        }
+    </style>
+</head>
+<body>
+                <a href="/" class="back-home">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 16 16" class="me-2">
+                    <path fill-rule="evenodd" d="M15 8a.5.5 0 0 0-.5-.5H2.707l3.147-3.146a.5.5 0 1 0-.708-.708l-4 4a.5.5 0 0 0 0 .708l4 4a.5.5 0 0 0 .708-.708L2.707 8.5H14.5A.5.5 0 0 0 15 8z"/>
+                </svg>
+                返回主页
+            </a>
+    <div class="container-fluid py-4">
+        <h1 class="text-center mb-4">知识库管理系统</h1>
+        
+        <!-- 功能导航 -->
+        <ul class="nav nav-tabs mb-4" id="managementTabs">
+            <li class="nav-item">
+                <a class="nav-link active" href="#documents" data-bs-toggle="tab">文档管理</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" href="#visualization" data-bs-toggle="tab">关系可视化</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link text-danger" href="#danger-zone" data-bs-toggle="tab">危险操作</a>
+            </li>
+        </ul>
+
+        <div class="tab-content">
+            <!-- 文档管理 -->
+            <div class="tab-pane fade show active" id="documents">
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <input type="text" class="form-control" id="searchInput" placeholder="搜索文档标题或内容...">
+                    </div>
+                    <div class="col-md-2">
+                        <button class="btn btn-primary w-100" onclick="loadDocuments()">搜索</button>
+                    </div>
+                </div>
+
+                <div class="row" id="documentList">
+                    <!-- 文档列表将通过JS动态加载 -->
+                </div>
+
+                <nav aria-label="Page navigation">
+                    <ul class="pagination justify-content-center mt-3" id="pagination">
+                        <!-- 分页控件将通过JS动态生成 -->
+                    </ul>
+                </nav>
+            </div>
+
+            <!-- 关系可视化 -->
+            <div class="tab-pane fade" id="visualization">
+                <div class="alert alert-info">
+                    展示文档、实体及其关系的网络图（最多显示50个节点）
+                </div>
+                <div id="graph-container"></div>
+            </div>
+
+            <!-- 危险操作 -->
+            <div class="tab-pane fade" id="danger-zone">
+                <div class="alert alert-danger">
+                    <h4 class="alert-heading">警告！</h4>
+                    <p>以下操作将永久删除数据，不可恢复！</p>
+                </div>
+
+                <div class="card border-danger mb-3">
+                    <div class="card-header bg-danger text-white">
+                        重置整个知识库
+                    </div>
+                    <div class="card-body">
+                        <p>这将删除所有文档、向量和实体关系</p>
+                        <div class="d-flex align-items-center">
+                            <input type="checkbox" class="form-check-input me-2" id="confirmReset">
+                            <label class="form-check-label" for="confirmReset">我确认要清空数据库</label>
+                            <button class="btn btn-danger ms-3" onclick="resetDatabase()">执行重置</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 删除确认模态框 -->
+    <div class="modal fade" id="deleteModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header bg-warning">
+                    <h5 class="modal-title">确认删除</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p>确定要删除此文档及其所有关联数据吗？</p>
+                    <p class="text-danger">此操作不可撤销！</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-danger" id="confirmDelete">确认删除</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // 全局变量
+        let currentPage = 1;
+        const perPage = 5;
+        let currentDocIdToDelete = null;
+        let network = null;
+
+        // 初始化页面
+        document.addEventListener('DOMContentLoaded', function() {
+            loadDocuments();
+            
+            // 初始化可视化标签页事件
+            document.querySelector('a[href="#visualization"]').addEventListener('shown.bs.tab', function() {
+                loadVisualization();
+            });
+        });
+
+        // 加载文档列表
+        async function loadDocuments(page = 1) {
+            currentPage = page;
+            const searchQuery = document.getElementById('searchInput').value;
+            
+            try {
+                const response = await fetch(`/api/documents/list?page=${page}&per_page=${perPage}&search=${encodeURIComponent(searchQuery)}`);
+                const data = await response.json();
+                
+                renderDocumentList(data.documents);
+                renderPagination(data.total, data.page, data.per_page);
+            } catch (error) {
+                console.error('加载文档失败:', error);
+                alert('加载文档失败: ' + error.message);
+            }
+        }
+
+        // 渲染文档列表
+        function renderDocumentList(documents) {
+            const container = document.getElementById('documentList');
+            container.innerHTML = '';
+            
+            if (documents.length === 0) {
+                container.innerHTML = '<div class="col-12 text-center py-5"><h5>没有找到文档</h5></div>';
+                return;
+            }
+            
+            documents.forEach(doc => {
+                const card = document.createElement('div');
+                card.className = 'col-md-6 mb-4';
+                card.innerHTML = `
+                    <div class="card document-card h-100">
+                        <div class="card-body">
+                            <h5 class="card-title">${doc.title}</h5>
+                            <p class="card-text text-muted">${doc.preview}...</p>
+                            <div class="d-flex justify-content-between align-items-center">
+                                <small class="text-muted">${new Date(doc.created_at).toLocaleString()}</small>
+                                <button class="btn btn-sm btn-outline-danger" onclick="showDeleteModal('${doc.id}')">
+                                    删除
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                container.appendChild(card);
+            });
+        }
+
+        // 渲染分页控件
+        function renderPagination(total, page, perPage) {
+            const totalPages = Math.ceil(total / perPage);
+            const pagination = document.getElementById('pagination');
+            pagination.innerHTML = '';
+            
+            // 上一页按钮
+            pagination.innerHTML += `
+                <li class="page-item ${page === 1 ? 'disabled' : ''}">
+                    <a class="page-link" href="#" onclick="loadDocuments(${page - 1})">上一页</a>
+                </li>
+            `;
+            
+            // 页码按钮
+            for (let i = 1; i <= totalPages; i++) {
+                pagination.innerHTML += `
+                    <li class="page-item ${i === page ? 'active' : ''}">
+                        <a class="page-link" href="#" onclick="loadDocuments(${i})">${i}</a>
+                    </li>
+                `;
+            }
+            
+            // 下一页按钮
+            pagination.innerHTML += `
+                <li class="page-item ${page >= totalPages ? 'disabled' : ''}">
+                    <a class="page-link" href="#" onclick="loadDocuments(${page + 1})">下一页</a>
+                </li>
+            `;
+        }
+
+        // 显示删除确认模态框
+        function showDeleteModal(docId) {
+            currentDocIdToDelete = docId;
+            const modal = new bootstrap.Modal(document.getElementById('deleteModal'));
+            modal.show();
+        }
+
+        // 确认删除文档
+        document.getElementById('confirmDelete').addEventListener('click', async function() {
+            try {
+                const response = await fetch('/api/documents/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ doc_id: currentDocIdToDelete })
+                });
+                
+                const result = await response.json();
+                if (result.success) {
+                    alert('文档删除成功');
+                    loadDocuments(currentPage);
+                } else {
+                    throw new Error(result.message || '删除失败');
+                }
+            } catch (error) {
+                console.error('删除失败:', error);
+                alert('删除失败: ' + error.message);
+            } finally {
+                currentDocIdToDelete = null;
+                bootstrap.Modal.getInstance(document.getElementById('deleteModal')).hide();
+            }
+        });
+
+        // 加载可视化图
+        async function loadVisualization() {
+            try {
+                const response = await fetch('/api/graph/visualization?limit=50');
+                const graphData = await response.json();
+                
+                const container = document.getElementById('graph-container');
+                const data = {
+                    nodes: new vis.DataSet(graphData.nodes.map(node => ({
+                        id: node.id,
+                        label: node.label,
+                        group: node.type,
+                        shape: node.type === 'document' ? 'box' : 'ellipse'
+                    }))),
+                    edges: new vis.DataSet(graphData.links.map(link => ({
+                        from: link.source,
+                        to: link.target,
+                        label: link.type,
+                        arrows: 'to'
+                    })))
+                };
+                
+                const options = {
+                    layout: {
+                        improvedLayout: true
+                    },
+                    nodes: {
+                        font: {
+                            size: 14
+                        }
+                    },
+                    edges: {
+                        font: {
+                            size: 12,
+                            align: 'middle'
+                        },
+                        smooth: true
+                    },
+                    groups: {
+                        document: {
+                            color: {
+                                background: '#6DA9E4',
+                                border: '#4A89C8'
+                            }
+                        },
+                        person: {
+                            color: {
+                                background: '#F5B7B1',
+                                border: '#E6B0AA'
+                            }
+                        },
+                        location: {
+                            color: {
+                                background: '#A9DFBF',
+                                border: '#82E0AA'
+                            }
+                        }
+                    }
+                };
+                
+                if (network) {
+                    network.destroy();
+                }
+                network = new vis.Network(container, data, options);
+            } catch (error) {
+                console.error('加载可视化失败:', error);
+                document.getElementById('graph-container').innerHTML = `
+                    <div class="alert alert-danger">可视化加载失败: ${error.message}</div>
+                `;
+            }
+        }
+
+        // 重置数据库
+        async function resetDatabase() {
+            if (!document.getElementById('confirmReset').checked) {
+                alert('请先勾选确认框');
+                return;
+            }
+            
+            if (!confirm('确定要清空整个数据库吗？此操作不可撤销！')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/database/reset', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ confirm: true })
+                });
+                
+                const result = await response.json();
+                if (result.success) {
+                    alert('数据库已重置');
+                    loadDocuments(1);
+                } else {
+                    throw new Error(result.message || '重置失败');
+                }
+            } catch (error) {
+                console.error('重置失败:', error);
+                alert('重置失败: ' + error.message);
+            }
+        }
+    </script>
+</body>
+</html>

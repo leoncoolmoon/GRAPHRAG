@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>GraphRAG 3D 知识图谱管理系统</title>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/FontLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/geometries/TextGeometry.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" type="text/css" href="style.css">
+        <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+            position: relative;
+        }
+
+        .header h1 {
+            font-size: 3rem;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .back-home {
+            position: absolute;
+            left: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            color: white;
+            text-decoration: none;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+        }
+
+        .back-home:hover {
+            color: #f8f9fa;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            padding: 30px;
+            margin-bottom: 30px;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            backdrop-filter: blur(5px);
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 20px 40px rgba(0,0,0,0.15);
+        }
+        #graph-container {
+            width: 100%;
+            height: 500px;
+            border: 1px solid #ddd;
+            margin-top: 20px;
+        }
+        .document-card {
+            transition: all 0.3s;
+        }
+        .document-card:hover {
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+        .entity-badge {
+            font-size: 0.8em;
+            margin-right: 5px;
+        }
+
+
+        .node-info {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            max-width: 300px;
+            display: none;
+            z-index: 100;
+        }
+        /* 3D容器增强样式 */
+#graph3d-container {
+    position: relative;
+    border-radius: 12px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+    overflow: hidden;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+}
+
+/* 加载指示器 */
+.loading-indicator {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: white;
+    font-size: 1.2rem;
+    z-index: 10;
+}
+
+/* 控制面板 */
+.controls-panel {
+    position: absolute;
+    bottom: 20px;
+    right: 20px;
+    background: rgba(0,0,0,0.7);
+    padding: 10px;
+    border-radius: 8px;
+    z-index: 10;
+}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <a href="/" class="back-home">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 16 16" class="me-2">
+                    <path fill-rule="evenodd" d="M15 8a.5.5 0 0 0-.5-.5H2.707l3.147-3.146a.5.5 0 1 0-.708-.708l-4 4a.5.5 0 0 0 0 .708l4 4a.5.5 0 0 0 .708-.708L2.707 8.5H14.5A.5.5 0 0 0 15 8z"/>
+                </svg>
+                返回主页
+            </a>
+            <h1>3D 知识图谱管理系统</h1>
+            <p class="lead text-light">交互式探索文档与实体关系</p>
+        </div>
+
+        <div class="card">
+            <div class="tabs">
+                <button class="tab active" onclick="switchTab('management')">文档管理</button>
+                <button class="tab" onclick="switchTab('3d-view')">3D 图谱</button>
+                <button class="tab" onclick="switchTab('danger-zone')">危险操作</button>
+            </div>
+
+            <div id="management" class="tab-content active">
+                 <!-- 文档管理 -->
+            <div class="tab-pane fade show active" id="documents">
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <input type="text" class="form-control" id="searchInput" placeholder="搜索文档标题或内容...">
+                    </div>
+                    <div class="col-md-2">
+                        <button class="btn btn-primary w-100" onclick="loadDocuments()">搜索</button>
+                    </div>
+                </div>
+
+                <div class="row" id="documentList">
+                    <!-- 文档列表将通过JS动态加载 -->
+                </div>
+
+                <nav aria-label="Page navigation">
+                    <ul class="pagination justify-content-center mt-3" id="pagination">
+                        <!-- 分页控件将通过JS动态生成 -->
+                    </ul>
+                </nav>
+            </div>
+            </div>
+
+            <div id="3d-view" class="tab-content">
+                <div class="alert alert-info">
+                    使用鼠标拖拽旋转视角，滚轮缩放，点击节点查看详情
+                </div>
+                <div id="graph3d-container"></div>
+                <div class="node-info" id="nodeInfo"></div>
+                <div class="mt-3">
+                    <button class="btn btn-sm btn-outline-light me-2" onclick="resetCamera()">
+                        <i class="bi bi-arrow-counterclockwise"></i> 重置视角
+                    </button>
+                    <div class="form-check form-switch d-inline-block">
+                        <input class="form-check-input" type="checkbox" id="autoRotate" checked>
+                        <label class="form-check-label text-light" for="autoRotate">自动旋转</label>
+                    </div>
+                </div>
+            </div>
+
+            <div id="danger-zone" class="tab-content">
+                <!-- 危险操作 -->
+                <div class="alert alert-danger">
+                    <h4 class="alert-heading">警告！</h4>
+                    <p>以下操作将永久删除数据，不可恢复！</p>
+                </div>
+
+                <div class="card border-danger mb-3">
+                    <div class="card-header bg-danger text-white">
+                        重置整个知识库
+                    </div>
+                    <div class="card-body">
+                        <p>这将删除所有文档、向量和实体关系</p>
+                        <div class="d-flex align-items-center">
+                            <input type="checkbox" class="form-check-input me-2" id="confirmReset">
+                            <label class="form-check-label" for="confirmReset">我确认要清空数据库</label>
+                            <button class="btn btn-danger ms-3" onclick="resetDatabase()">执行重置</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 删除确认模态框保持不变... -->
+    <!-- 删除确认模态框 -->
+    <div class="modal fade" id="deleteModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header bg-warning">
+                    <h5 class="modal-title">确认删除</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p>确定要删除此文档及其所有关联数据吗？</p>
+                    <p class="text-danger">此操作不可撤销！</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-danger" id="confirmDelete">确认删除</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // 全局变量
+
+        let selectedNode = null;
+        let autoRotate = true;
+        let rotationSpeed = 0.005;
+
+     
+        // 窗口大小调整
+        function onWindowResize() {
+            const container = document.getElementById('graph3d-container');
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        }
+
+        // 切换标签页
+        function switchTab(tabId) {
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            document.getElementById(tabId).classList.add('active');
+            event.currentTarget.classList.add('active');
+            
+            // 初始化3D场景（如果切换到3D视图）
+            if (tabId === '3d-view' && !renderer) {
+                init3DScene();
+            }
+        }
+
+      // 全局变量
+        let currentPage = 1;
+        const perPage = 5;
+        let currentDocIdToDelete = null;
+        let network = null;
+
+        // 初始化页面
+        document.addEventListener('DOMContentLoaded', function() {
+            loadDocuments();
+            
+            // 初始化可视化标签页事件
+            document.querySelectorAll('.nav-link[data-bs-toggle="tab"]').forEach(tab => {
+                tab.addEventListener('shown.bs.tab', function(event) {
+                if (event.target.getAttribute('href') === '#3d-view') {
+                    init3DScene();
+                }
+    });
+});
+        });
+
+        // 加载文档列表
+        async function loadDocuments(page = 1) {
+            currentPage = page;
+            const searchQuery = document.getElementById('searchInput').value;
+            
+            try {
+                const response = await fetch(`/api/documents/list?page=${page}&per_page=${perPage}&search=${encodeURIComponent(searchQuery)}`);
+                const data = await response.json();
+                
+                renderDocumentList(data.documents);
+                renderPagination(data.total, data.page, data.per_page);
+            } catch (error) {
+                console.error('加载文档失败:', error);
+                alert('加载文档失败: ' + error.message);
+            }
+        }
+
+        // 渲染文档列表
+        function renderDocumentList(documents) {
+            const container = document.getElementById('documentList');
+            container.innerHTML = '';
+            
+            if (documents.length === 0) {
+                container.innerHTML = '<div class="col-12 text-center py-5"><h5>没有找到文档</h5></div>';
+                return;
+            }
+            
+            documents.forEach(doc => {
+                const card = document.createElement('div');
+                card.className = 'col-md-6 mb-4';
+                card.innerHTML = `
+                    <div class="card document-card h-100">
+                        <div class="card-body">
+                            <h5 class="card-title">${doc.title}</h5>
+                            <p class="card-text text-muted">${doc.preview}...</p>
+                            <div class="d-flex justify-content-between align-items-center">
+                                <small class="text-muted">${new Date(doc.created_at).toLocaleString()}</small>
+                                <button class="btn btn-sm btn-outline-danger" onclick="showDeleteModal('${doc.id}')">
+                                    删除
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                container.appendChild(card);
+            });
+        }
+
+        // 渲染分页控件
+        function renderPagination(total, page, perPage) {
+            const totalPages = Math.ceil(total / perPage);
+            const pagination = document.getElementById('pagination');
+            pagination.innerHTML = '';
+            
+            // 上一页按钮
+            pagination.innerHTML += `
+                <li class="page-item ${page === 1 ? 'disabled' : ''}">
+                    <a class="page-link" href="#" onclick="loadDocuments(${page - 1})">上一页</a>
+                </li>
+            `;
+            
+            // 页码按钮
+            for (let i = 1; i <= totalPages; i++) {
+                pagination.innerHTML += `
+                    <li class="page-item ${i === page ? 'active' : ''}">
+                        <a class="page-link" href="#" onclick="loadDocuments(${i})">${i}</a>
+                    </li>
+                `;
+            }
+            
+            // 下一页按钮
+            pagination.innerHTML += `
+                <li class="page-item ${page >= totalPages ? 'disabled' : ''}">
+                    <a class="page-link" href="#" onclick="loadDocuments(${page + 1})">下一页</a>
+                </li>
+            `;
+        }
+
+        // 显示删除确认模态框
+        function showDeleteModal(docId) {
+            currentDocIdToDelete = docId;
+            const modal = new bootstrap.Modal(document.getElementById('deleteModal'));
+            modal.show();
+        }
+
+        // 确认删除文档
+        document.getElementById('confirmDelete').addEventListener('click', async function() {
+            try {
+                const response = await fetch('/api/documents/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ doc_id: currentDocIdToDelete })
+                });
+                
+                const result = await response.json();
+                if (result.success) {
+                    alert('文档删除成功');
+                    loadDocuments(currentPage);
+                } else {
+                    throw new Error(result.message || '删除失败');
+                }
+            } catch (error) {
+                console.error('删除失败:', error);
+                alert('删除失败: ' + error.message);
+            } finally {
+                currentDocIdToDelete = null;
+                bootstrap.Modal.getInstance(document.getElementById('deleteModal')).hide();
+            }
+        });
+
+        // 加载可视化图
+        async function loadVisualization() {
+            try {
+                const response = await fetch('/api/graph/visualization?limit=50');
+                const graphData = await response.json();
+                
+                const container = document.getElementById('graph-container');
+                const data = {
+                    nodes: new vis.DataSet(graphData.nodes.map(node => ({
+                        id: node.id,
+                        label: node.label,
+                        group: node.type,
+                        shape: node.type === 'document' ? 'box' : 'ellipse'
+                    }))),
+                    edges: new vis.DataSet(graphData.links.map(link => ({
+                        from: link.source,
+                        to: link.target,
+                        label: link.type,
+                        arrows: 'to'
+                    })))
+                };
+                
+                const options = {
+                    layout: {
+                        improvedLayout: true
+                    },
+                    nodes: {
+                        font: {
+                            size: 14
+                        }
+                    },
+                    edges: {
+                        font: {
+                            size: 12,
+                            align: 'middle'
+                        },
+                        smooth: true
+                    },
+                    groups: {
+                        document: {
+                            color: {
+                                background: '#6DA9E4',
+                                border: '#4A89C8'
+                            }
+                        },
+                        person: {
+                            color: {
+                                background: '#F5B7B1',
+                                border: '#E6B0AA'
+                            }
+                        },
+                        location: {
+                            color: {
+                                background: '#A9DFBF',
+                                border: '#82E0AA'
+                            }
+                        }
+                    }
+                };
+                
+                if (network) {
+                    network.destroy();
+                }
+                network = new vis.Network(container, data, options);
+            } catch (error) {
+                console.error('加载可视化失败:', error);
+                document.getElementById('graph-container').innerHTML = `
+                    <div class="alert alert-danger">可视化加载失败: ${error.message}</div>
+                `;
+            }
+        }
+
+        // 重置数据库
+        async function resetDatabase() {
+            if (!document.getElementById('confirmReset').checked) {
+                alert('请先勾选确认框');
+                return;
+            }
+            
+            if (!confirm('确定要清空整个数据库吗？此操作不可撤销！')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/database/reset', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ confirm: true })
+                });
+                
+                const result = await response.json();
+                if (result.success) {
+                    alert('数据库已重置');
+                    loadDocuments(1);
+                } else {
+                    throw new Error(result.message || '重置失败');
+                }
+            } catch (error) {
+                console.error('重置失败:', error);
+                alert('重置失败: ' + error.message);
+            }
+        }
+
+         // 全局变量
+        let scene, camera, renderer, controls;
+        let nodes = [], links = [], labels = [];
+        let hoveredNode = null;
+        let raycaster = new THREE.Raycaster();
+        let mouse = new THREE.Vector2();
+        let graphData = { nodes: [], links: [] };
+
+        // 初始化3D场景
+        async function init3DScene() {
+            // 1. 创建场景
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x111122);
+            
+            // 2. 创建相机
+            camera = new THREE.PerspectiveCamera(75, 
+                document.getElementById('graph3d-container').clientWidth / 
+                document.getElementById('graph3d-container').clientHeight, 
+                0.1, 1000);
+            camera.position.z = 50;
+            
+            // 3. 创建渲染器
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            updateRendererSize();
+            document.getElementById('graph3d-container').appendChild(renderer.domElement);
+            
+            // 4. 添加控制器
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            
+            // 5. 添加灯光
+            const ambientLight = new THREE.AmbientLight(0x404040);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+            directionalLight.position.set(1, 1, 1);
+            scene.add(directionalLight);
+            
+            // 6. 加载数据
+            graphData = await loadGraphData();
+            createGraph();
+            
+            // 7. 添加事件监听
+            setupEventListeners();
+            
+            // 8. 开始动画
+            animate();
+        }
+
+        // 加载图数据
+        async function loadGraphData() {
+            try {
+                const response = await fetch('/api/graph/3d-visualization?limit=50');
+                return await response.json();
+            } catch (error) {
+                console.error('加载数据失败:', error);
+                return { nodes: [], links: [] };
+            }
+        }
+
+        // 创建3D图谱
+        function createGraph(){
+            clearScene();
+
+            // 创建节点
+            graphData.nodes.forEach(node => {
+            const canvas = document.createElement('canvas');
+            canvas.width = 256;
+            canvas.height = 64;
+            const ctx = canvas.getContext('2d');
+            
+            // 绘制文字背景
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // 绘制文字
+            ctx.font = 'Bold 32px Arial';
+            ctx.fillStyle = 'white';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(node.name, canvas.width/2, canvas.height/2);
+            
+            // 创建纹理
+            const texture = new THREE.CanvasTexture(canvas);
+            const smaterial = new THREE.SpriteMaterial({ 
+
+                map: texture,
+                transparent: true
+            });
+
+                const sprite = new THREE.Sprite(smaterial);
+            
+            // 设置位置和大小
+                sprite.scale.set(4, 1, 1);
+
+                sprite.position.set(
+                    (Math.random() - 0.5) * 7,
+                    (Math.random() - 0.5) * 7,
+                    (Math.random() - 0.5) * 7
+                );
+
+                //sprite.position.y = position.y + 2;
+                //sprite.position.normalize();
+                //sprite.smaterial.rotation = camera.rotation.z; // 试图和视角一致
+                sprite.center.set(0.5, 0.5); // 居中对齐
+                
+
+                const geometry = new THREE.SphereGeometry(node.size/4 || 2, 16, 16);
+                const material = new THREE.MeshPhongMaterial({ 
+                    color: node.color || 0x667eea,
+                    emissive: 0x111111,
+                    specular: 0xffffff,
+                    shininess: 20,
+                    transparent: true,
+                    opacity: 0.6
+                });
+                const sphere = new THREE.Mesh(geometry, material);
+                
+                // 随机初始位置
+                sphere.position.copy(sprite.position);
+                sprite.userData = node;
+                //sphere.userData = node;
+                scene.add(sphere);
+                scene.add(sprite);
+                nodes.push(sprite);
+            });   
+
+             graphData.links.forEach(link => {
+                const sourceNode = nodes.find(n => n.userData.id === link.source);
+                const targetNode = nodes.find(n => n.userData.id === link.target);
+                
+                if (sourceNode && targetNode) {
+                    const lineGeometry = new THREE.BufferGeometry().setFromPoints([
+                        sourceNode.position.clone(),
+                        targetNode.position.clone()
+                    ]);
+                    const lineMaterial = new THREE.LineBasicMaterial({ 
+                        color: 0xaaaaaa,
+                        transparent: true,
+                        opacity: 0.6
+                    });
+
+                    const line = new THREE.Line(lineGeometry, lineMaterial);
+                    line.userData = {
+                        source: sourceNode,
+                        target: targetNode
+                    };
+
+                    scene.add(line);
+                    links.push(line);
+                }
+            });
+            simulateLayout();
+        }
+
+
+        // 物理模拟布局（完整实现）
+        function simulateLayout(iterations = 100) {
+            const center = new THREE.Vector3(0, 0, 0);
+            const repulsionForce = 5;
+            const attractionForce = 0.1;
+            
+            for (let i = 0; i < iterations; i++) {
+                // 节点间斥力
+                for (let j = 0; j < nodes.length; j++) {
+                    for (let k = j + 1; k < nodes.length; k++) {
+                        const node1 = nodes[j];
+                        const node2 = nodes[k];
+                        const direction = new THREE.Vector3().subVectors(node1.position, node2.position);
+                        const distance = direction.length();
+                        direction.normalize();
+                        
+                        const force = repulsionForce / (distance * distance);
+                        node1.position.add(direction.clone().multiplyScalar(force * 0.5));
+                        node2.position.add(direction.clone().multiplyScalar(-force * 0.5));
+                    }
+                }
+                
+                // 连接节点间的引力
+                graphData.links.forEach(link => {
+                    const sourceNode = nodes.find(n => n.userData.id === link.source);
+                    const targetNode = nodes.find(n => n.userData.id === link.target);
+                    
+                    if (sourceNode && targetNode) {
+                        const direction = new THREE.Vector3().subVectors(targetNode.position, sourceNode.position);
+                        const distance = direction.length();
+                        direction.normalize();
+                        
+                        const force = attractionForce * distance * (link.strength || 1);
+                        sourceNode.position.add(direction.clone().multiplyScalar(force * 0.5));
+                        targetNode.position.add(direction.clone().multiplyScalar(-force * 0.5));
+                    }
+                });
+                
+                // 向中心引力
+                nodes.forEach(node => {
+                    const direction = new THREE.Vector3().subVectors(center, node.position);
+                    const distance = direction.length();
+                    direction.normalize();
+                    
+                    const force = distance * 0.02;
+                    node.position.add(direction.multiplyScalar(force));
+                });
+            }
+            
+            // // 更新标签位置
+            // labels.forEach((label, i) => {
+            //     if (nodes[i]) {
+            //         label.position.copy(nodes[i].position);
+            //         label.position.y += 6;
+            //     }
+            // });
+        }
+
+
+        // 设置事件监听（完整实现）
+        function setupEventListeners() {
+            if (!renderer) return;
+            
+            // 鼠标移动事件
+            renderer.domElement.addEventListener('mousemove', (event) => {
+                updateMousePosition(event);
+                
+                raycaster.setFromCamera(mouse, camera);
+                const intersects = raycaster.intersectObjects(nodes);
+                const newHoveredNode = intersects[0]?.object || null;
+                
+                updateHoverEffect(newHoveredNode);
+            });
+            
+            // 点击事件
+            renderer.domElement.addEventListener('click', (event) => {
+                updateMousePosition(event);
+                
+                raycaster.setFromCamera(mouse, camera);
+                const intersects = raycaster.intersectObjects(nodes);
+                if (intersects.length > 0) {
+                    showNodeInfo(intersects[0].object.userData);
+                } else {
+                    document.getElementById('nodeInfo').style.display = 'none';
+                }
+            });
+            
+            // 窗口大小调整
+            window.addEventListener('resize', updateRendererSize);
+        }
+
+        // 更新鼠标位置
+        function updateMousePosition(event) {
+            const rect = renderer.domElement.getBoundingClientRect();
+            mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+            mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+        }
+
+        // 更新悬停效果
+        function updateHoverEffect(newHoveredNode) {
+            if (hoveredNode !== newHoveredNode) {
+                if (hoveredNode) {
+                    hoveredNode.material.emissive.setHex(0x111111);
+                }
+                if (newHoveredNode) {
+                    newHoveredNode.material.emissive.setHex(0x888888);
+                }
+                hoveredNode = newHoveredNode;
+            }
+        }
+
+        // 显示节点信息
+        function showNodeInfo(nodeData) {
+            const infoBox = document.getElementById('nodeInfo');
+            infoBox.innerHTML = `
+                <h5>${nodeData.name}</h5>
+                <p><strong>类型:</strong> ${nodeData.type}</p>
+                ${nodeData.properties ? `<p>${JSON.stringify(nodeData.properties)}</p>` : ''}
+            `;
+            infoBox.style.display = 'block';
+        }
+
+        // 更新渲染器尺寸
+        function updateRendererSize() {
+            if (!renderer) return;
+            const container = document.getElementById('graph3d-container');
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+        }
+
+        // 清空场景
+        function clearScene() {
+            nodes.forEach(node => scene.remove(node));
+            links.forEach(link => scene.remove(link));
+            labels.forEach(label => scene.remove(label));
+            nodes = [];
+            links = [];
+            labels = [];
+        }
+
+        // 重置相机
+        function resetCamera() {
+            controls.reset();
+            camera.position.z = 50;
+        }
+
+        // 动画循环
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+            
+            // 更新标签朝向
+            labels.forEach(label => {
+                label.lookAt(camera.position);
+            });
+        }
+
+        // 标签页切换事件
+        document.querySelector('a[href="#3d-view"]').addEventListener('shown.bs.tab', function() {
+            if (!scene) {
+                init3DScene();
+            }
+        });
+
+        // 初始化文档列表
+        async function loadDocuments() {
+            try {
+                const response = await fetch('/api/documents/list');
+                const data = await response.json();
+                renderDocumentList(data.documents);
+            } catch (error) {
+                console.error('加载文档失败:', error);
+            }
+        }
+
+        function renderDocumentList(documents) {
+            const container = document.getElementById('documentList');
+            container.innerHTML = documents.map(doc => `
+                <div class="col-md-6 mb-4">
+                    <div class="card document-card h-100">
+                        <div class="card-body">
+                            <h5 class="card-title">${doc.title}</h5>
+                            <p class="card-text text-muted">${doc.preview}...</p>
+                            <small class="text-muted">${new Date(doc.created_at).toLocaleString()}</small>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // 初始化页面
+        document.addEventListener('DOMContentLoaded', function() {
+            loadDocuments();
+        });
+        </script>
+ 
+</body>
+</html>
