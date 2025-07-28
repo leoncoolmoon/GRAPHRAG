@@ -17,6 +17,7 @@ import tiktoken
 import uuid
 from datetime import datetime
 import logging
+from PyPDF2 import PdfReader
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -87,7 +88,7 @@ class OllamaClient:
                         **kwargs
                     }
                 },
-                timeout=60
+                timeout=600
             )
             response.raise_for_status()
             return response.json()["response"]
@@ -173,7 +174,7 @@ class Neo4jManager:
                 session.run(
                     """
                     MERGE (e:Entity {name: $name})
-                    SET e.type = $type, e.properties = $properties
+                    SET e.type = $type, e.properties = $properties, e.source_doc = $doc_id
                     WITH e
                     MATCH (d:Document {id: $doc_id})
                     MERGE (d)-[:CONTAINS_ENTITY]->(e)
@@ -313,6 +314,7 @@ class TextProcessor:
 1. 只提取重要的人名、地名、组织、概念等实体
 2. 只提取明确的关系，不要推断
 3. 返回有效的JSON格式
+4. 使用原文档的语言和格式，不要翻译或修改实体名称
 
 示例格式：
 {{
@@ -451,9 +453,9 @@ class GraphRAG:
             # 生成回答
             prompt = f"""
 基于以下上下文信息回答用户问题，要求：
-1. 回答要准确、具体、有用
+1. 回答要准确、具体、有用，内容必须基于文档片段，不要凭空想象。
 2. 如果上下文中没有相关信息，请明确说明
-3. 用中文回答
+3. 用文档的语言回答
 
 上下文信息：
 {context}
@@ -474,7 +476,7 @@ class GraphRAG:
             # 如果需要图信息
             if include_graph and similar_chunks:
                 # 提取问题中的实体
-                entity_prompt = f"从这个问题中提取主要的实体名词（人名、地名、组织名等），只返回实体名称，用逗号分隔：{query}"
+                entity_prompt = f"从这个问题中提取主要的实体名词（人名、地名、组织名等），只返回实体名称，用逗号分隔，并保持原有的语言不要翻译或修改实体名称：{query}"
                 entities_response = self.ollama_client.generate(Config.LLM_MODEL, entity_prompt)
                 entity_names = [name.strip() for name in entities_response.split(",")[:5]]
                 
@@ -553,6 +555,13 @@ async def add_document(document: DocumentInput):
         logger.error(f"文档添加失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/download")
+async def download_file(filename: str):
+    file_path = os.path.join(Config.UPLOAD_DIR, filename)
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail=f"文件: {file_path} 不存在")
+    return FileResponse(file_path, filename=filename, media_type='application/pdf')
+
 @app.post("/api/documents/upload")
 async def upload_document(file: UploadFile = File(...)):
     """上传文档文件"""
@@ -561,19 +570,55 @@ async def upload_document(file: UploadFile = File(...)):
     
     try:
         content = await file.read()
-        text_content = content.decode("utf-8")
-        
-        doc_id = graph_rag.add_document(
-            title=file.filename if file.filename else "No name",
-            content=text_content,
-            metadata={"filename": file.filename, "content_type": file.content_type}
-        )
-        return {"doc_id": doc_id, "message": "文件上传成功"}
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="文件编码不支持，请使用UTF-8编码")
+        filename = file.filename
+        content_type = file.content_type if file.content_type else "no type"
+        if filename:
+            file_path = os.path.join(Config.UPLOAD_DIR, filename)
+            with open(file_path, "wb") as f:
+                f.write(content)
+            if filename.endswith(".pdf") or content_type == "application/pdf":
+                doc_id = process_pdf_file(content, filename, content_type)
+            else:
+                doc_id = process_text_file(content, filename, content_type)
+
+            return {"doc_id": doc_id, "message": "文件上传成功"}
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"文件上传失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="文件处理时发生错误")
+
+def process_text_file(content: bytes, filename: str, content_type: str):
+    try:
+        text_content = content.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="文件编码不支持，请使用UTF-8编码")
+    
+    doc_id = graph_rag.add_document(
+        title=filename or "No name",
+        content=text_content,
+        metadata={"filename": filename, "content_type": content_type}
+    ) if graph_rag else ""
+    return doc_id
+
+
+def process_pdf_file(content: bytes, filename: str, content_type: str):
+    try:
+        import io
+        pdf_stream = io.BytesIO(content)
+        reader = PdfReader(pdf_stream)
+        text = "\n".join(page.extract_text() or "" for page in reader.pages)
+
+        doc_id = graph_rag.add_document(
+            title=filename or "No name",
+            content=text,
+            metadata={"filename": filename, "content_type": content_type}
+        ) if graph_rag else ""
+        return doc_id
+    except Exception as e:
+        logger.error(f"处理 PDF 文件失败: {e}")
+        raise HTTPException(status_code=400, detail="无法读取 PDF 文件内容")
 
 @app.post("/api/query")
 async def query_knowledge_base(query_input: QueryInput):
@@ -637,6 +682,10 @@ class DeleteDocumentInput(BaseModel):
 class ResetDatabaseInput(BaseModel):
     confirm: bool
 
+class RebuildIndexInput(BaseModel):
+    doc_id: str
+
+
 # 新增API接口
 @app.get("/api/documents/list")
 async def list_documents(page: int = 1, per_page: int = 10, search: str = ""):
@@ -649,11 +698,27 @@ async def list_documents(page: int = 1, per_page: int = 10, search: str = ""):
         query = """
             MATCH (d:Document)
             WHERE $search = "" OR d.title CONTAINS $search OR d.content CONTAINS $search
-            RETURN d.id as id, d.title as title, 
-                   substring(d.content, 0, 100) as preview,
-                   d.created_at as created_at
+            WITH d
             ORDER BY d.created_at DESC
             SKIP $skip LIMIT $limit
+
+            CALL {
+                WITH d
+                RETURN COUNT { (d)-[:CONTAINS_ENTITY]->(:Entity) } AS entity_count
+            }
+            CALL {
+                WITH d
+                MATCH ()-[r:RELATED]->()
+                WHERE r.doc_id = d.id
+                RETURN count(r) AS relationship_count
+            }
+
+            RETURN d.id AS id,
+                d.title AS title,
+                substring(d.content, 0, 100) AS preview,
+                d.created_at AS created_at,
+                entity_count,
+                relationship_count
         """
         with graph_rag.neo4j_manager.driver.session() as session:
             result = session.run(query, search=search, skip=skip, limit=per_page)
@@ -675,6 +740,72 @@ async def list_documents(page: int = 1, per_page: int = 10, search: str = ""):
     except Exception as e:
         logger.error(f"文档列表获取失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+#使用/api/relationships/rebuild来重建单个文档内的关系
+@app.post("/api/relationships/rebuild")
+async def rebuild_document_relationships(data: RebuildIndexInput):
+    """重建单个文档内的实体和关系"""
+    if not graph_rag or not graph_rag.neo4j_manager:
+        raise HTTPException(status_code=500, detail="系统未初始化")
+
+    try:
+        with graph_rag.neo4j_manager.driver.session() as session:
+            # 1. 获取文档内容
+            result = session.run(
+                """
+                MATCH (d:Document {id: $doc_id})
+                RETURN d.content AS content
+                """,
+                doc_id=data.doc_id
+            )
+            record = result.single()
+            if not record:
+                raise HTTPException(status_code=404, detail="找不到指定文档")
+            content = record["content"]
+
+            # 2. 删除旧的 CONTAINS_ENTITY 和 RELATED 关系 + 独占实体
+            session.run(
+                """
+                // 删除与该文档的实体连接
+                MATCH (d:Document {id: $doc_id})-[r:CONTAINS_ENTITY]->(e:Entity)
+                DELETE r
+                WITH $doc_id AS doc_id
+
+                // 删除与该文档的关系连接
+                MATCH ()-[rel:RELATED {doc_id: doc_id}]->()
+                DELETE rel
+                WITH doc_id
+
+                // 删除该文档唯一引用的实体
+                MATCH (e:Entity)
+                WHERE NOT (e)<-[:CONTAINS_ENTITY]-(:Document)
+                DETACH DELETE e
+                """,
+                doc_id=data.doc_id
+            )
+
+        # 3. 分块并重新提取实体关系
+        chunks = graph_rag.text_processor.chunk_text(content)
+        logger.info(f"[重建索引] 文档被分为 {len(chunks)} 块")
+
+        for i, chunk in enumerate(chunks):
+            if i % 3 != 0:
+                continue  # 节约资源
+            entities, relationships = graph_rag.text_processor.extract_entities_and_relations(chunk)
+            if entities:
+                graph_rag.neo4j_manager.store_entities(entities, data.doc_id)
+                logger.info(f"[重建索引] 第{i}块提取到 {len(entities)} 个实体")
+            if relationships:
+                graph_rag.neo4j_manager.store_relationships(relationships, data.doc_id)
+                logger.info(f"[重建索引] 第{i}块提取到 {len(relationships)} 个关系")
+
+        return {"success": True, "message": "文档实体和关系已重建"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"文档实体和关系重建失败: {e}") 
+        raise HTTPException(status_code=500, detail=str(e))
+       
 
 @app.post("/api/documents/delete")
 async def delete_document(data: DeleteDocumentInput):
@@ -757,6 +888,60 @@ async def get_visualization_data(limit: int = 50):
                 return r["graph"] if r else None
     except Exception as e:
         logger.error(f"图数据获取失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.get("/api/graph/centered")
+async def get_centered_graph(node_id: str):
+    """获取以某节点为中心的子图"""
+    try:
+        if not graph_rag or not graph_rag.neo4j_manager:
+            raise HTTPException(status_code=500, detail="系统未初始化")
+
+        with graph_rag.neo4j_manager.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (n)
+                WHERE n.id = $node_id OR n.name = $node_id
+
+                OPTIONAL MATCH (n)-[r]->(m)
+                OPTIONAL MATCH (m)-[r2]->(o)
+                OPTIONAL MATCH (p)-[r3]->(n)
+
+                WITH COLLECT(DISTINCT n) + COLLECT(DISTINCT m) + COLLECT(DISTINCT o) + COLLECT(DISTINCT p) AS nodes,
+                     COLLECT(DISTINCT r) + COLLECT(DISTINCT r2) + COLLECT(DISTINCT r3) AS relationships
+
+                RETURN {
+                    nodes: [node IN nodes | {
+                        id: 
+                            CASE 
+                                WHEN node.id IS NOT NULL THEN node.id
+                                ELSE node.name + "_" + COALESCE(node.source_doc, "")  // 加来源文件名
+                            END,
+                        label: coalesce(node.title, node.name),
+                        type: coalesce(node.type, labels(node)[0])
+                    }],
+                    links: [rel IN relationships | {
+                        source: 
+                            CASE 
+                                WHEN startNode(rel).id IS NOT NULL THEN startNode(rel).id
+                                ELSE startNode(rel).name + "_" + COALESCE(startNode(rel).source_doc, "")
+                            END,
+                        target: 
+                            CASE 
+                                WHEN endNode(rel).id IS NOT NULL THEN endNode(rel).id
+                                ELSE endNode(rel).name + "_" + COALESCE(endNode(rel).source_doc, "")
+                            END,
+                        type: type(rel)
+                    }]
+                } AS graph
+
+                """,
+                node_id=node_id
+            )
+            record = result.single()
+            return record["graph"] if record else {"nodes": [], "links": []}
+    except Exception as e:
+        logger.error(f"获取中心图失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/graph/3d-visualization")

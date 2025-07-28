@@ -121,6 +121,25 @@
             </div>
         </div>
     </div>
+<!-- 重建关系确认模态框 -->
+<div class="modal fade" id="rebuildModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header bg-info">
+                <h5 class="modal-title">确认重建关系</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p>确定要<strong>重建</strong>此文档的实体和关系吗？</p>
+                <p class="text-danger">原有结构将被删除并重新提取，此操作不可撤销！</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="confirmRebuild">确认重建</button>
+            </div>
+        </div>
+    </div>
+</div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
@@ -128,6 +147,7 @@
         let currentPage = 1;
         const perPage = 5;
         let currentDocIdToDelete = null;
+        let currentDocIdToRebuild = null;
         let network = null;
 
         // 初始化页面
@@ -173,10 +193,16 @@
                 card.innerHTML = `
                     <div class="card document-card h-100">
                         <div class="card-body">
-                            <h5 class="card-title">${doc.title}</h5>
-                            <p class="card-text text-muted">${doc.preview}...</p>
+                            <h5 class="card-title">  <a href="/api/download?filename=${doc.title}" target="_blank">${doc.title} </a></h5>
+                            <p class="card-text text-muted" ondblclick="loadVisualization('${doc.id}')">${doc.preview}...</p>
+                            <p class="card-text small text-secondary">
+                                实体数：${doc.entity_count}，关系数：${doc.relationship_count}
+                            </p>
                             <div class="d-flex justify-content-between align-items-center">
                                 <small class="text-muted">${new Date(doc.created_at).toLocaleString()}</small>
+                                <button class="btn btn-sm btn-outline-danger" onclick="showRebuildModal('${doc.id}')">
+                                    重建关系
+                                </button>
                                 <button class="btn btn-sm btn-outline-danger" onclick="showDeleteModal('${doc.id}')">
                                     删除
                                 </button>
@@ -249,13 +275,48 @@
                 bootstrap.Modal.getInstance(document.getElementById('deleteModal')).hide();
             }
         });
-
-        // 加载可视化图
-        async function loadVisualization() {
+        // 显示重建模态框
+        function showRebuildModal(docId) {
+            currentDocIdToRebuild = docId;
+            const modal = new bootstrap.Modal(document.getElementById('rebuildModal'));
+            modal.show();
+        }
+        // 显示重建模态框
+        document.getElementById('confirmRebuild').addEventListener('click', async function () {
+            bootstrap.Modal.getInstance(document.getElementById('rebuildModal')).hide();
             try {
-                const response = await fetch('/api/graph/visualization?limit=50');
+                const response = await fetch('/api/relationships/rebuild', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ doc_id: currentDocIdToRebuild })  // 注意字段名是 doc_id
+                });
+
+                const result = await response.json();
+                if (result.success) {
+                    alert('关系重建成功');
+                    loadDocuments(currentPage);
+                } else {
+                    throw new Error(result.message || '重建失败');
+                }
+            } catch (error) {
+                console.error('重建关系失败:', error);
+                alert('重建关系失败: ' + error.message);
+            } finally {
+                currentDocIdToRebuild = null;
+            }
+        });
+
+         
+        // 加载可视化图
+        async function loadVisualization(centerDocId = null) {
+            try {
+                const endpoint = centerDocId 
+                    ? `/api/graph/centered?node_id=${encodeURIComponent(centerDocId)}`
+                    : '/api/graph/visualization?limit=50';
+
+                const response = await fetch(endpoint);
                 const graphData = await response.json();
-                
+
                 const container = document.getElementById('graph-container');
                 const data = {
                     nodes: new vis.DataSet(graphData.nodes.map(node => ({
@@ -271,21 +332,12 @@
                         arrows: 'to'
                     })))
                 };
-                
+
                 const options = {
-                    layout: {
-                        improvedLayout: true
-                    },
-                    nodes: {
-                        font: {
-                            size: 14
-                        }
-                    },
+                    layout: { improvedLayout: true },
+                    nodes: { font: { size: 14 } },
                     edges: {
-                        font: {
-                            size: 12,
-                            align: 'middle'
-                        },
+                        font: { size: 12, align: 'middle' },
                         smooth: true
                     },
                     groups: {
@@ -314,6 +366,13 @@
                     network.destroy();
                 }
                 network = new vis.Network(container, data, options);
+
+                // 保留原有双击节点行为
+                network.on("doubleClick", async function (params) {
+                    if (params.nodes.length === 0) return;
+                    loadVisualization(params.nodes[0]);
+                });
+
             } catch (error) {
                 console.error('加载可视化失败:', error);
                 document.getElementById('graph-container').innerHTML = `

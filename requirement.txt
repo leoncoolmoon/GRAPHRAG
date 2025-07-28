@@ -9,3 +9,4 @@ numpy==1.24.3
 tiktoken==0.5.2
 requests==2.31.0
 python-multipart==0.0.6
+pyPDF==2-3.0.1
