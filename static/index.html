@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" type="text/css" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <title>GraphRAG 知识库管理系统</title>
 </head>
 <body>
@@ -135,7 +136,18 @@
             
             const files = e.dataTransfer.files;
             if (files.length > 0) {
-                handleFileUpload(files[0]);
+                fileUpload.classList.add('uploading'); // 添加一个样式
+                fileUpload.innerText = '正在上传中，请稍候...';
+
+                // 禁用后续交互
+                fileUpload.style.pointerEvents = 'none';
+                handleFileUpload(files[0]).finally(() => {
+                    // 恢复 UI
+                    fileUpload.classList.remove('uploading');
+                    fileUpload.innerText = '拖拽文件到这里上传';
+                    fileUpload.style.pointerEvents = 'auto';
+                });
+
             }
         });
         function manageDB(){
@@ -194,8 +206,18 @@
             const file = fileInput.files[0];
             
             if (!file) return;
-            
-            await handleFileUpload(file);
+            fileUpload.classList.add('uploading'); // 添加一个样式
+            fileUpload.innerText = '正在上传中，请稍候...';
+
+            // 禁用后续交互
+            fileUpload.style.pointerEvents = 'none';
+            await handleFileUpload(file)
+            .finally(() => {
+            // 恢复 UI
+            fileUpload.classList.remove('uploading');
+            fileUpload.innerText = '拖拽文件到这里上传';
+            fileUpload.style.pointerEvents = 'auto';
+        });
         }
 
         async function handleFileUpload(file) {
@@ -273,7 +295,7 @@
             let html = `
                 <div class="query-result">
                     <h3>🤖 AI回答</h3>
-                    <div class="answer">${result.answer}</div>
+                    <div class="answer">${marked.parse(result.answer)}</div>
                     
                     <h4>📚 参考来源</h4>
                     <div class="sources">
@@ -282,10 +304,14 @@
             if (result.sources && result.sources.length > 0) {
                 result.sources.forEach((source, index) => {
                     const similarity = source.similarity ? (source.similarity * 100).toFixed(1) : 'N/A';
+                    const title = source.title || '未命名文档';
+                    const filename = source.metadata?.filename || '';
+                    const page = source.metadata?.page || 'N/A';
                     html += `
-                        <div class="source-item">
-                            <div class="similarity-score">相似度: ${similarity}%</div>
-                            <div class="source-content">${source.content.substring(0, 200)}...</div>
+                        <div class="source-item mb-3 p-2 border rounded">
+                            <div class="fw-bold mb-1" > 📄 来自文档: <a href="/api/download?filename=${title}" target="_blank"> ${title} ${filename ? `(${filename})` : ''}</a> page:${page}</div>
+                            <div class="similarity-score text-secondary mb-1">相似度: ${similarity}%</div>
+                            <div class="source-content text-muted">${source.content.substring(0, 200)}...</div>
                         </div>
                     `;
                 });

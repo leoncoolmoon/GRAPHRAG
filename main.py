@@ -1,8 +1,8 @@
 # main.py - GraphRAG主程序
 import os
 import json
-import asyncio
-from typing import List, Dict, Any, Optional
+import re
+from typing import List, Dict, Any, Union
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -10,9 +10,6 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import requests
 from neo4j import GraphDatabase
-import pandas as pd
-import numpy as np
-from pathlib import Path
 import tiktoken
 import uuid
 from datetime import datetime
@@ -52,7 +49,7 @@ class QueryInput(BaseModel):
 class Entity(BaseModel):
     name: str
     type: str
-    properties: Dict[str, Any] = {}
+    metadata: Dict[str, Any] = {}
 
 class Relationship(BaseModel):
     source: str
@@ -115,7 +112,8 @@ class OllamaClient:
 
 # Neo4j数据库管理器 - 增强连接处理
 class Neo4jManager:
-    def __init__(self, uri: str, user: str, password: str):
+    def __init__(self, uri: str, user: str, password: str, parent=None):
+        parent = parent 
         try:
             self.driver = GraphDatabase.driver(uri, auth=(user, password))
             # 测试连接
@@ -153,49 +151,65 @@ class Neo4jManager:
                 metadata=json.dumps(metadata), timestamp=datetime.now().isoformat()
             )
     
-    def store_chunk(self, chunk_id: str, doc_id: str, content: str, embedding: List[float]):
-        """存储文档块"""
+    def store_chunk(self, chunk_id: str, doc_id: str, content: str, embedding: List[float], metadata: Dict[str, Any]):
+        """存储文档块及其元信息"""
         with self.driver.session() as session:
             session.run(
                 """
                 MERGE (c:Chunk {id: $chunk_id})
-                SET c.content = $content, c.embedding = $embedding
+                SET c.content = $content, 
+                    c.embedding = $embedding,
+                    c.metadata = $metadata
                 WITH c
                 MATCH (d:Document {id: $doc_id})
                 MERGE (d)-[:HAS_CHUNK]->(c)
                 """,
-                chunk_id=chunk_id, doc_id=doc_id, content=content, embedding=embedding
+                chunk_id=chunk_id,
+                doc_id=doc_id,
+                content=content,
+                embedding=embedding,
+                metadata=json.dumps(metadata)
             )
-    
-    def store_entities(self, entities: List[Entity], doc_id: str):
-        """存储实体"""
+            
+    def store_chunks(self, chunks: List[Dict], doc_id: str):
+        """批量存储所有分块"""
+        if not graph_rag:
+            raise ValueError("GraphRAG 未初始化")
+        for idx, chunk in enumerate(chunks):
+            chunk_id = f"{doc_id}_chunk_{idx}"
+            embedding = graph_rag.ollama_client.embed(Config.EMBEDDING_MODEL, chunk["text"])  # 假设你已有 embedder
+            self.store_chunk(chunk_id, doc_id, chunk["text"], embedding, chunk.get("metadata", {}))
+
+    def store_entitie(self, entity: Entity, doc_id: str):
+        """存储实体及其元信息"""
         with self.driver.session() as session:
-            for entity in entities:
-                session.run(
+            session.run(
                     """
                     MERGE (e:Entity {name: $name})
-                    SET e.type = $type, e.properties = $properties, e.source_doc = $doc_id
+                    SET e.type = coalesce(e.type, $type),
+                        e += $properties
                     WITH e
                     MATCH (d:Document {id: $doc_id})
                     MERGE (d)-[:CONTAINS_ENTITY]->(e)
                     """,
-                    name=entity.name, type=entity.type, 
-                    properties=json.dumps(entity.properties), doc_id=doc_id
+                    name=entity.name,
+                    type=entity.type,
+                    properties=entity.metadata or {},
+                    doc_id=doc_id
                 )
-    
+
+        
+    def store_entities(self, entities: List[Entity], doc_id: str):
+        """存储实体并与文档关联"""
+        with self.driver.session() as session:
+            for entity in entities:
+                self.store_entitie(entity, doc_id)
+
     def store_relationships(self, relationships: List[Relationship], doc_id: str):
         """存储关系"""
         with self.driver.session() as session:
             for rel in relationships:
                 session.run(
-                    # """
-                    # MATCH (s:Entity {name: $source}), (t:Entity {name: $target})
-                    # MERGE (s)-[r:RELATED {type: $type}]->(t)
-                    # SET r.properties = $properties
-                    # WITH r
-                    # MATCH (d:Document {id: $doc_id})
-                    # MERGE (d)-[:CONTAINS_RELATIONSHIP]->(r)
-                    # """,
                     """
                     MATCH (s:Entity {name: $source}), (t:Entity {name: $target})
                     MERGE (s)-[r:RELATED {type: $type}]->(t)
@@ -214,13 +228,14 @@ class Neo4jManager:
                 MATCH (c:Chunk)
                 WHERE c.embedding IS NOT NULL
                 WITH c, 
-                     reduce(dot = 0.0, i IN range(0, size($query_embedding)-1) | 
+                    reduce(dot = 0.0, i IN range(0, size($query_embedding)-1) | 
                             dot + (c.embedding[i] * $query_embedding[i])) as dot_product,
-                     sqrt(reduce(norm_a = 0.0, a IN c.embedding | norm_a + a^2)) as norm_a,
-                     sqrt(reduce(norm_b = 0.0, b IN $query_embedding | norm_b + b^2)) as norm_b
+                    sqrt(reduce(norm_a = 0.0, a IN c.embedding | norm_a + a^2)) as norm_a,
+                    sqrt(reduce(norm_b = 0.0, b IN $query_embedding | norm_b + b^2)) as norm_b
                 WHERE norm_a > 0 AND norm_b > 0
                 WITH c, dot_product / (norm_a * norm_b) as similarity
-                RETURN c.id as chunk_id, c.content as content, similarity
+                MATCH (d:Document)-[:HAS_CHUNK]->(c)
+                RETURN c.id as chunk_id, c.content as content, similarity, d.title as title, c.metadata as metadata
                 ORDER BY similarity DESC
                 LIMIT $limit
                 """,
@@ -380,7 +395,7 @@ class GraphRAG:
         except Exception as e:
             logger.error(f"Neo4j初始化失败: {e}")
     
-    def add_document(self, title: str, content: str, metadata: Dict[str, Any] = {}):
+    def add_document(self, title: str, paragraphs: List[Dict], metadata: Dict[str, Any] = {}):
         """添加文档到知识库"""
         if not self.neo4j_manager:
             raise HTTPException(status_code=500, detail="数据库未连接")
@@ -391,39 +406,23 @@ class GraphRAG:
         doc_id = str(uuid.uuid4())
         
         try:
+            content = "\n\n".join(p["text"] for p in paragraphs)
             # 存储原始文档
             self.neo4j_manager.store_document(doc_id, title, content, metadata)
             
             # 分块处理
-            chunks = self.text_processor.chunk_text(content)
-            logger.info(f"文档分为 {len(chunks)} 个块")
-            
-            for i, chunk in enumerate(chunks):
-                chunk_id = f"{doc_id}_chunk_{i}"
-                
-                # 生成嵌入
-                embedding = self.ollama_client.embed(Config.EMBEDDING_MODEL, chunk)
-                
-                # 存储文档块
-                self.neo4j_manager.store_chunk(chunk_id, doc_id, chunk, embedding)
-                
-                # 提取实体和关系（每3个块提取一次，减少开销）
-                if i % 3 == 0:
-                    entities, relationships = self.text_processor.extract_entities_and_relations(chunk)
-                    
-                    # 存储实体和关系
-                    if entities:
-                        self.neo4j_manager.store_entities(entities, doc_id)
-                        logger.info(f"提取到 {len(entities)} 个实体")
-                    if relationships:
-                        self.neo4j_manager.store_relationships(relationships, doc_id)
-                        logger.info(f"提取到 {len(relationships)} 个关系")
-            
+            chunk_process(paragraphs, doc_id)
             return doc_id
         except Exception as e:
             logger.error(f"文档添加失败: {e}")
             raise HTTPException(status_code=500, detail=f"文档添加失败: {str(e)}")
-    
+
+    def safe_load_metadata(self, chunk):
+        try:
+            return json.loads(chunk.get('metadata', '{}'))
+        except json.JSONDecodeError:
+            return {}
+            
     def query(self, query: str, limit: int = 10, include_graph: bool = True):
         """查询知识库"""
         if not self.neo4j_manager:
@@ -446,8 +445,12 @@ class GraphRAG:
             
             # 构建上下文
             context = "\n\n".join([
-                f"文档片段 {i+1}:\n{chunk['content']}" 
+                f"文档片段 {i+1}（文件: {metadata.get('filename', '未知')}，"
+                f"页码: {metadata.get('page', '?')}，"
+                f"段落号: {metadata.get('paragraph_index', '?')}）:\n"
+                f"{chunk['content']}"
                 for i, chunk in enumerate(similar_chunks[:5])
+                for metadata in [self.safe_load_metadata(chunk)]  # 安全解析
             ])
             
             # 生成回答
@@ -547,7 +550,7 @@ async def add_document(document: DocumentInput):
     try:
         doc_id = graph_rag.add_document(
             title=document.title,
-            content=document.content,
+            paragraphs=process_text_file(document.content),
             metadata=document.metadata
         )
         return {"doc_id": doc_id, "message": "文档添加成功"}
@@ -570,55 +573,71 @@ async def upload_document(file: UploadFile = File(...)):
     
     try:
         content = await file.read()
-        filename = file.filename
-        content_type = file.content_type if file.content_type else "no type"
-        if filename:
-            file_path = os.path.join(Config.UPLOAD_DIR, filename)
-            with open(file_path, "wb") as f:
-                f.write(content)
-            if filename.endswith(".pdf") or content_type == "application/pdf":
-                doc_id = process_pdf_file(content, filename, content_type)
-            else:
-                doc_id = process_text_file(content, filename, content_type)
-
-            return {"doc_id": doc_id, "message": "文件上传成功"}
+        filename = file.filename or "No filename"
+        content_type = file.content_type or "no type"
+        filetype = filename.lower()
+        if filetype.endswith('.pdf'):
+            paragraphs = process_pdf_file(content)
+        elif filetype.endswith('.txt'):
+            try:
+                text = content.decode("utf-8")
+            except UnicodeDecodeError:
+                raise HTTPException(status_code=400, detail="文本文件编码不支持，请使用 UTF-8")
+            paragraphs = process_text_file(text)
+        else:
+            raise HTTPException(status_code=400, detail="仅支持 .pdf 和 .txt 文件")
+        
+        file_path = os.path.join(Config.UPLOAD_DIR, filename)
+        with open(file_path, "wb") as f:
+            f.write(content)
+        
+        doc_id = graph_rag.add_document(
+            title=filename or "No filename",
+            paragraphs=paragraphs,
+            metadata={"filename": filename, "content_type": content_type}
+        ) if graph_rag else ""
+        
+        return {"doc_id": doc_id, "message": "文件上传成功"}
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"文件上传失败: {e}")
         raise HTTPException(status_code=500, detail="文件处理时发生错误")
-
-def process_text_file(content: bytes, filename: str, content_type: str):
-    try:
-        text_content = content.decode("utf-8")
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="文件编码不支持，请使用UTF-8编码")
     
-    doc_id = graph_rag.add_document(
-        title=filename or "No name",
-        content=text_content,
-        metadata={"filename": filename, "content_type": content_type}
-    ) if graph_rag else ""
-    return doc_id
+#TODO:use other models to help denoise
+def process_text_file(text: str, page: int = 0) -> List[Dict]:
+    """按段落切分纯文本，附加页面信息（默认为 0）"""
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    raw_paragraphs = [p.strip() for p in re.split(r'\n{2,}', text) if p.strip()]
+    return [
+        {
+            "text": para,
+            "metadata": {
+                "page": page,
+                "paragraph_index": idx
+            }
+        }
+        for idx, para in enumerate(raw_paragraphs)
+    ]
 
-
-def process_pdf_file(content: bytes, filename: str, content_type: str):
+def process_pdf_file(content: bytes) -> List[Dict]:
+    """按段落切分 PDF，每页提取文本，并附加 page 信息"""
     try:
         import io
         pdf_stream = io.BytesIO(content)
         reader = PdfReader(pdf_stream)
-        text = "\n".join(page.extract_text() or "" for page in reader.pages)
-
-        doc_id = graph_rag.add_document(
-            title=filename or "No name",
-            content=text,
-            metadata={"filename": filename, "content_type": content_type}
-        ) if graph_rag else ""
-        return doc_id
+        paragraphs = []
+        for page_number, page in enumerate(reader.pages):
+            text = page.extract_text() or ""
+            paras = process_text_file(text, page=page_number)
+            paragraphs.extend(paras)
+        return paragraphs
     except Exception as e:
-        logger.error(f"处理 PDF 文件失败: {e}")
-        raise HTTPException(status_code=400, detail="无法读取 PDF 文件内容")
+        raise HTTPException(status_code=400, detail=f"无法读取 PDF 内容: {e}")
+
+#TODO:use other models to help denoise
+
 
 @app.post("/api/query")
 async def query_knowledge_base(query_input: QueryInput):
@@ -675,7 +694,7 @@ async def get_stats():
     except Exception as e:
         logger.error(f"获取统计信息失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-# 新增数据模型
+
 class DeleteDocumentInput(BaseModel):
     doc_id: str
 
@@ -686,9 +705,9 @@ class RebuildIndexInput(BaseModel):
     doc_id: str
 
 
-# 新增API接口
+
 @app.get("/api/documents/list")
-async def list_documents(page: int = 1, per_page: int = 10, search: str = ""):
+async def list_documents(page: int = 1, per_page: int = 8, search: str = ""):
     """获取文档列表（分页+搜索）"""
     if not graph_rag or not graph_rag.neo4j_manager:
         raise HTTPException(status_code=500, detail="系统未初始化")
@@ -783,29 +802,47 @@ async def rebuild_document_relationships(data: RebuildIndexInput):
                 doc_id=data.doc_id
             )
 
-        # 3. 分块并重新提取实体关系
-        chunks = graph_rag.text_processor.chunk_text(content)
-        logger.info(f"[重建索引] 文档被分为 {len(chunks)} 块")
-
-        for i, chunk in enumerate(chunks):
-            if i % 3 != 0:
-                continue  # 节约资源
-            entities, relationships = graph_rag.text_processor.extract_entities_and_relations(chunk)
-            if entities:
-                graph_rag.neo4j_manager.store_entities(entities, data.doc_id)
-                logger.info(f"[重建索引] 第{i}块提取到 {len(entities)} 个实体")
-            if relationships:
-                graph_rag.neo4j_manager.store_relationships(relationships, data.doc_id)
-                logger.info(f"[重建索引] 第{i}块提取到 {len(relationships)} 个关系")
-
-        return {"success": True, "message": "文档实体和关系已重建"}
+        # 3. 分块并重新提取实体关系并返回
+        return {"success": chunk_process(content,data.doc_id,True), "message": "文档实体和关系已重建"}
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"文档实体和关系重建失败: {e}") 
         raise HTTPException(status_code=500, detail=str(e))
-       
+    
+def chunk_process(paragraphs: List[Dict], doc_id: str, rebuider=False):
+    if not graph_rag or not graph_rag.neo4j_manager:
+        raise HTTPException(status_code=500, detail="系统未初始化")
+
+    chunks = []
+    for i in range(len(paragraphs)):
+        window = [paragraphs[j] for j in range(i - 1, i + 2) if 0 <= j < len(paragraphs)]
+        chunk_text = "\n\n".join(p["text"] for p in window)
+        chunk_meta = window[1].get("metadata", {}) if len(window) > 1 else {}
+        chunk_id = f"{doc_id}_{i}"
+        embedding = graph_rag.ollama_client.embed(Config.EMBEDDING_MODEL,chunk_text)
+        chunks.append({
+            "text": chunk_text,
+            "metadata": chunk_meta
+        })
+        graph_rag.neo4j_manager.store_chunk(chunk_id, doc_id, chunk_text, embedding, chunk_meta)
+
+        if i % 2 != 0:
+            continue  # 隔一个处理
+        entities, relationships = graph_rag.text_processor.extract_entities_and_relations(chunk_text)
+        if entities:
+            for ent in entities:
+                ent.metadata = {**ent.metadata, **chunk_meta} if hasattr(ent, "metadata") else chunk_meta
+            graph_rag.neo4j_manager.store_entities(entities, doc_id)
+            logger.info(f"{'[重建索引]' if rebuider else ''} 第{i}块提取到 {len(entities)} 个实体")
+
+        if relationships:
+            graph_rag.neo4j_manager.store_relationships(relationships, doc_id)
+            logger.info(f"{'[重建索引]' if rebuider else ''} 第{i}块提取到 {len(relationships)} 个关系")
+    logger.info(f"{'[重建索引]' if rebuider else ''} 文档被分为 {len(chunks)} 块")
+    return True
+
 
 @app.post("/api/documents/delete")
 async def delete_document(data: DeleteDocumentInput):
@@ -889,7 +926,27 @@ async def get_visualization_data(limit: int = 50):
     except Exception as e:
         logger.error(f"图数据获取失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    
+@app.get("/api/entity-node")
+def get_entity_node(name: str):
+    try:
+        if graph_rag and graph_rag.neo4j_manager:
+             with graph_rag.neo4j_manager.driver.session() as session:
+                result = session.run("""
+                    MATCH (e:Entity)
+                    WHERE toLower(e.name) CONTAINS toLower($name)
+                    RETURN id(e) AS node_id, e.name AS name, e.type AS type, e.properties AS properties
+                    ORDER BY size(e.name)
+                    LIMIT 1
+                """, name=name)
+                record = result.single()
+                if record:
+                    return record.data()
+                else:
+                    return {"message": "Entity not found"}
+    except Exception as e:
+        logger.error(f"文本id获取失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+                       
 @app.get("/api/graph/centered")
 async def get_centered_graph(node_id: str):
     """获取以某节点为中心的子图"""
@@ -903,24 +960,42 @@ async def get_centered_graph(node_id: str):
                 MATCH (n)
                 WHERE n.id = $node_id OR n.name = $node_id
 
-                OPTIONAL MATCH (n)-[r]->(m)
-                OPTIONAL MATCH (m)-[r2]->(o)
-                OPTIONAL MATCH (p)-[r3]->(n)
+                // 获取1度邻居（出邻居）
+                OPTIONAL MATCH (n)-[r1]->(m)
+                // 获取1度邻居（入邻居）  
+                OPTIONAL MATCH (p)-[r2]->(n)
 
-                WITH COLLECT(DISTINCT n) + COLLECT(DISTINCT m) + COLLECT(DISTINCT o) + COLLECT(DISTINCT p) AS nodes,
-                     COLLECT(DISTINCT r) + COLLECT(DISTINCT r2) + COLLECT(DISTINCT r3) AS relationships
+                // 过滤掉null值
+                WITH n, 
+                    [node IN COLLECT(DISTINCT m) WHERE node IS NOT NULL] AS outNeighbors,
+                    [node IN COLLECT(DISTINCT p) WHERE node IS NOT NULL] AS inNeighbors,
+                    [rel IN COLLECT(DISTINCT r1) WHERE rel IS NOT NULL] AS outRels,
+                    [rel IN COLLECT(DISTINCT r2) WHERE rel IS NOT NULL] AS inRels
+
+                // 合并所有节点，中心节点排在前面
+                WITH [n] + outNeighbors + inNeighbors AS allNodes,
+                    outRels + inRels AS allRels
+
+                // 限制节点数量为50
+                WITH allNodes[0..50] AS limitedNodes, allRels
+
+                // 过滤关系，只保留在限制节点范围内的关系
+                WITH limitedNodes,
+                    [rel IN allRels WHERE 
+                    startNode(rel) IN limitedNodes AND 
+                    endNode(rel) IN limitedNodes] AS validRels
 
                 RETURN {
-                    nodes: [node IN nodes | {
+                    nodes: [node IN limitedNodes WHERE node IS NOT NULL | {
                         id: 
                             CASE 
                                 WHEN node.id IS NOT NULL THEN node.id
-                                ELSE node.name + "_" + COALESCE(node.source_doc, "")  // 加来源文件名
+                                ELSE node.name + "_" + COALESCE(node.source_doc, "")
                             END,
                         label: coalesce(node.title, node.name),
                         type: coalesce(node.type, labels(node)[0])
                     }],
-                    links: [rel IN relationships | {
+                    links: [rel IN validRels WHERE rel IS NOT NULL | {
                         source: 
                             CASE 
                                 WHEN startNode(rel).id IS NOT NULL THEN startNode(rel).id

@@ -55,6 +55,9 @@
                         <input type="text" class="form-control" id="searchInput" placeholder="搜索文档标题或内容...">
                     </div>
                     <div class="col-md-2">
+                        <button class="btn btn-primary w-100" onclick="visualizeit()">可视化</button>
+                    </div>
+                    <div class="col-md-2">
                         <button class="btn btn-primary w-100" onclick="loadDocuments()">搜索</button>
                     </div>
                 </div>
@@ -145,18 +148,18 @@
     <script>
         // 全局变量
         let currentPage = 1;
-        const perPage = 5;
+        const perPage = 8;
         let currentDocIdToDelete = null;
         let currentDocIdToRebuild = null;
         let network = null;
-
+        let visualized = false;
         // 初始化页面
         document.addEventListener('DOMContentLoaded', function() {
             loadDocuments();
             
             // 初始化可视化标签页事件
             document.querySelector('a[href="#visualization"]').addEventListener('shown.bs.tab', function() {
-                loadVisualization();
+                if(!visualized) loadVisualization();
             });
         });
 
@@ -176,6 +179,30 @@
                 alert('加载文档失败: ' + error.message);
             }
         }
+        async function visualizeit(){
+           const text = document.getElementById("searchInput").value.trim();
+                if (!text) return;
+
+                try {
+                    const response =  await fetch(`/api/entity-node?name=${encodeURIComponent(text)}`);
+                    const data = await response.json();
+
+                    if (data.node_id) {
+                        loadRelatedVisualization(data.node_id)
+                    } else {
+                        alert("未找到对应的实体");
+                    }
+                } catch (error) {
+                    console.error("查询实体失败:", error);
+                    alert("查询失败，请检查网络或后端服务");
+                }
+
+        }
+        function loadRelatedVisualization(id) {
+            // 加载相关可视化数据
+        loadVisualization(id)
+        new bootstrap.Tab(document.querySelector('#managementTabs a[href="#visualization"]')).show();     
+        }
 
         // 渲染文档列表
         function renderDocumentList(documents) {
@@ -192,9 +219,9 @@
                 card.className = 'col-md-6 mb-4';
                 card.innerHTML = `
                     <div class="card document-card h-100">
-                        <div class="card-body">
+                        <div class="card-body" onclick="loadRelatedVisualization('${doc.id}')">
                             <h5 class="card-title">  <a href="/api/download?filename=${doc.title}" target="_blank">${doc.title} </a></h5>
-                            <p class="card-text text-muted" ondblclick="loadVisualization('${doc.id}')">${doc.preview}...</p>
+                            <p class="card-text text-muted" >${doc.preview}...</p>
                             <p class="card-text small text-secondary">
                                 实体数：${doc.entity_count}，关系数：${doc.relationship_count}
                             </p>
@@ -364,6 +391,7 @@
                 
                 if (network) {
                     network.destroy();
+                    network = null;
                 }
                 network = new vis.Network(container, data, options);
 
@@ -372,12 +400,13 @@
                     if (params.nodes.length === 0) return;
                     loadVisualization(params.nodes[0]);
                 });
-
+                visualized = true;
             } catch (error) {
                 console.error('加载可视化失败:', error);
                 document.getElementById('graph-container').innerHTML = `
                     <div class="alert alert-danger">可视化加载失败: ${error.message}</div>
                 `;
+                visualized = false;
             }
         }
 
