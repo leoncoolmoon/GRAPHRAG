@@ -51,7 +51,7 @@
                 <!-- 文件上传方式 -->
                 <h3>📎 或上传文件</h3>
                 <div class="file-upload" id="fileUpload" onclick="document.getElementById('fileInput').click()">
-                    <input type="file" id="fileInput" style="display: none;" onchange="uploadFile()" accept=".txt,.md,.json,.pdf">
+                    <input type="file" id="fileInput" style="display: none;" onchange="uploadFiles()" accept=".txt,.md,.json,.pdf" multiple>
                     <p>点击选择文件或拖拽文件到此处</p>
                     <p style="color: #666; font-size: 14px;">支持 .txt, .md, .json, .PDF 格式</p>
                 </div>
@@ -134,20 +134,18 @@
             e.preventDefault();
             fileUpload.classList.remove('dragover');
             
-            const files = e.dataTransfer.files;
-            if (files.length > 0) {
-                fileUpload.classList.add('uploading'); // 添加一个样式
-                fileUpload.innerText = '正在上传中，请稍候...';
-
-                // 禁用后续交互
-                fileUpload.style.pointerEvents = 'none';
-                handleFileUpload(files[0]).finally(() => {
-                    // 恢复 UI
-                    fileUpload.classList.remove('uploading');
-                    fileUpload.innerText = '拖拽文件到这里上传';
-                    fileUpload.style.pointerEvents = 'auto';
-                });
-
+            const files = Array.from(e.dataTransfer.files);
+            if (files.length === 0) return;
+            
+            // 添加到上传队列
+            uploadQueue.push(...files);
+            
+            // 更新UI显示队列中的文件数
+            updateQueueStatus();
+            
+            // 如果当前没有在上传，开始处理队列
+            if (!isUploading) {
+                processUploadQueue();
             }
         });
         function manageDB(){
@@ -200,32 +198,83 @@
             }
         }
 
-        // 上传文件
-        async function uploadFile() {
-            const fileInput = document.getElementById('fileInput');
-            const file = fileInput.files[0];
-            
-            if (!file) return;
-            fileUpload.classList.add('uploading'); // 添加一个样式
-            fileUpload.innerText = '正在上传中，请稍候...';
+        // 文件上传队列
+        let uploadQueue = [];
+        let isUploading = false;
 
-            // 禁用后续交互
-            fileUpload.style.pointerEvents = 'none';
-            await handleFileUpload(file)
-            .finally(() => {
-            // 恢复 UI
-            fileUpload.classList.remove('uploading');
-            fileUpload.innerText = '拖拽文件到这里上传';
-            fileUpload.style.pointerEvents = 'auto';
-        });
+        // 修改后的上传函数
+        function uploadFiles() {
+            const fileInput = document.getElementById('fileInput');
+            const files = Array.from(fileInput.files);
+            
+            if (files.length === 0) return;
+            
+            // 添加到上传队列
+            uploadQueue.push(...files);
+            
+            // 更新UI显示队列中的文件数
+            updateQueueStatus();
+            
+            // 如果当前没有在上传，开始处理队列
+            if (!isUploading) {
+                processUploadQueue();
+            }
+            
+            // 清空文件输入，允许用户再次选择文件
+            fileInput.value = '';
         }
 
+        // 更新队列状态显示
+        function updateQueueStatus() {
+            if (uploadQueue.length > 0) {
+                showStatus(`待上传文件: ${uploadQueue.length}个`, 'info');
+            } 
+        }
+
+        // 处理上传队列
+        async function processUploadQueue() {
+            if (uploadQueue.length === 0) {
+                isUploading = false;
+                return;
+            }
+            
+            isUploading = true;
+            const file = uploadQueue.shift(); // 获取队列中的第一个文件
+            
+            // 更新UI
+            fileUpload.classList.add('uploading');
+            fileUpload.innerText = `正在上传 ${file.name}...`;
+            fileUpload.style.pointerEvents = 'none';
+            
+            try {
+                await handleFileUpload(file);
+            } catch (error) {
+                showStatus(`上传 ${file.name} 失败: ${error.message}`, 'error');
+            } finally {
+                // 更新队列状态
+                updateQueueStatus();
+                
+                // 恢复UI或显示下一个文件
+                if (uploadQueue.length > 0) {
+                    fileUpload.innerText = `准备上传 ${uploadQueue[0].name}...`;
+                } else {
+                    fileUpload.classList.remove('uploading');
+                    fileUpload.innerText = '拖拽文件到这里上传';
+                    fileUpload.style.pointerEvents = 'auto';
+                }
+                
+                // 继续处理下一个文件
+                processUploadQueue();
+            }
+        }
+
+        // 处理单个文件上传（基本保持不变）
         async function handleFileUpload(file) {
             const formData = new FormData();
             formData.append('file', file);
 
             try {
-                showStatus('正在上传文件...', 'info');
+                showStatus(`正在上传文件: ${file.name}...`, 'info');
                 
                 const response = await fetch(`${API_BASE}/documents/upload`, {
                     method: 'POST',
@@ -235,13 +284,12 @@
                 const result = await response.json();
                 
                 if (response.ok) {
-                    showStatus(`文件上传成功！文档ID: ${result.doc_id}`, 'success');
-                    document.getElementById('fileInput').value = '';
+                    showStatus(`文件 ${file.name} 上传成功！文档ID: ${result.doc_id}`, 'success');
                 } else {
-                    showStatus(`上传失败: ${result.detail}`, 'error');
+                    throw new Error(result.detail || '上传失败');
                 }
             } catch (error) {
-                showStatus(`上传错误: ${error.message}`, 'error');
+                throw error; // 将错误抛给上层处理
             }
         }
 

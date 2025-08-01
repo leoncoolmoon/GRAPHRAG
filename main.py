@@ -2,7 +2,8 @@
 import os
 import json
 import re
-from typing import List, Dict, Any, Union
+import subprocess
+from typing import List, Dict, Any, Optional, Union
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -15,6 +16,7 @@ import uuid
 from datetime import datetime
 import logging
 from PyPDF2 import PdfReader
+import time
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -48,13 +50,13 @@ class QueryInput(BaseModel):
 
 class Entity(BaseModel):
     name: str
-    type: str
+    type: Optional[str] = "Entity"
     metadata: Dict[str, Any] = {}
 
 class Relationship(BaseModel):
     source: str
     target: str
-    type: str
+    type: Optional[str] = "Relationship"
     properties: Dict[str, Any] = {}
 
 # Ollama客户端 - 增强错误处理
@@ -114,16 +116,71 @@ class OllamaClient:
 class Neo4jManager:
     def __init__(self, uri: str, user: str, password: str, parent=None):
         parent = parent 
-        try:
-            self.driver = GraphDatabase.driver(uri, auth=(user, password))
-            # 测试连接
-            with self.driver.session() as session:
-                session.run("RETURN 1")
-            logger.info("Neo4j连接成功")
-        except Exception as e:
-            logger.error(f"Neo4j连接失败: {e}")
-            raise HTTPException(status_code=500, detail=f"数据库连接失败: {str(e)}")
+        max_retries = 2  # 最大重试次数
+        retry_delay = 5  # 重试间隔(秒)
+        
+        for attempt in range(max_retries + 1):
+            try:
+                self.driver = GraphDatabase.driver(uri, auth=(user, password))
+                # 测试连接
+                with self.driver.session() as session:
+                    session.run("RETURN 1")
+                logger.info("Neo4j连接成功")
+                return  # 连接成功，直接返回
+                
+            except Exception as e:
+                if attempt == max_retries:
+                    logger.error(f"Neo4j连接失败，已达到最大重试次数: {e}")
+                    raise HTTPException(status_code=500, detail=f"数据库连接失败: {str(e)}")
+                
+                logger.warning(f"Neo4j连接失败，尝试启动容器 (尝试 {attempt + 1}/{max_retries}): {e}")
+                self._start_neo4j_container(user, password)
+                time.sleep(retry_delay)  # 等待容器启动
     
+    def _start_neo4j_container(self, user: str, password: str):
+        """尝试启动Neo4j容器（使用系统docker命令）"""
+        container_name = "neo4j"
+        
+        try:
+            # 检查容器是否存在
+            check_container_cmd = ["docker", "ps", "-a", "--filter", f"name={container_name}", "--format", "{{.Status}}"]
+            result = subprocess.run(check_container_cmd, capture_output=True, text=True)
+            
+            if result.returncode == 0 and result.stdout.strip():
+                status = result.stdout.strip().split()[0]
+                if status != "Up":
+                    logger.info(f"启动已存在的Neo4j容器: {container_name}")
+                    subprocess.run(["docker", "start", container_name], check=True)
+                else:
+                    logger.info(f"Neo4j容器已在运行: {container_name}")
+                return
+            
+            # 检查镜像是否存在
+            check_image_cmd = ["docker", "images", "-q", "neo4j:latest"]
+            result = subprocess.run(check_image_cmd, capture_output=True, text=True)
+            
+            if not result.stdout.strip():
+                logger.info("拉取Neo4j最新镜像...")
+                subprocess.run(["docker", "pull", "neo4j:latest"], check=True)
+            
+            # 运行新容器
+            logger.info("创建并启动新的Neo4j容器")
+            subprocess.run([
+                "docker", "run", "-d",
+                "--name", container_name,
+                "-p", "7474:7474",
+                "-p", "7687:7687",
+                "-e", f"NEO4J_AUTH={user}/{password}",
+                "neo4j:latest"
+            ], check=True)
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Docker命令执行失败: {e}")
+            raise HTTPException(status_code=500, detail=f"Docker操作失败: {str(e)}")
+        except FileNotFoundError:
+            logger.error("Docker未安装或不在PATH中")
+            raise HTTPException(status_code=500, detail="Docker未安装或不可用")
+           
     def close(self):
         if hasattr(self, 'driver'):
             self.driver.close()
@@ -590,7 +647,7 @@ async def upload_document(file: UploadFile = File(...)):
         file_path = os.path.join(Config.UPLOAD_DIR, filename)
         with open(file_path, "wb") as f:
             f.write(content)
-        
+        logger.info(f"文件已保存到 {file_path}")        
         doc_id = graph_rag.add_document(
             title=filename or "No filename",
             paragraphs=paragraphs,
