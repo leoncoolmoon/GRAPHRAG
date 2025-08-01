@@ -353,8 +353,9 @@
                 result.sources.forEach((source, index) => {
                     const similarity = source.similarity ? (source.similarity * 100).toFixed(1) : 'N/A';
                     const title = source.title || '未命名文档';
-                    const filename = source.metadata?.filename || '';
-                    const page = source.metadata?.page || 'N/A';
+                    const metadata = typeof source.metadata === 'string' ? JSON.parse(source.metadata) : source.metadata;
+                    const filename = metadata?.filename || '';
+                    const page = metadata?.page || 'N/A';
                     html += `
                         <div class="source-item mb-3 p-2 border rounded">
                             <div class="fw-bold mb-1" > 📄 来自文档: <a href="/api/download?filename=${title}" target="_blank"> ${title} ${filename ? `(${filename})` : ''}</a> page:${page}</div>
