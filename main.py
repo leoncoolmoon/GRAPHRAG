@@ -51,7 +51,7 @@ class QueryInput(BaseModel):
 class Entity(BaseModel):
     name: str
     type: Optional[str] = "Entity"
-    metadata: Dict[str, Any] = {}
+    properties: Dict[str, Any] = {}
 
 class Relationship(BaseModel):
     source: str
@@ -237,7 +237,7 @@ class Neo4jManager:
             embedding = graph_rag.ollama_client.embed(Config.EMBEDDING_MODEL, chunk["text"])  # 假设你已有 embedder
             self.store_chunk(chunk_id, doc_id, chunk["text"], embedding, chunk.get("metadata", {}))
 
-    def store_entitie(self, entity: Entity, doc_id: str):
+    def store_entity(self, entity: Entity, doc_id: str):
         """存储实体及其元信息"""
         with self.driver.session() as session:
             session.run(
@@ -251,7 +251,7 @@ class Neo4jManager:
                     """,
                     name=entity.name,
                     type=entity.type,
-                    properties=entity.metadata or {},
+                    properties=entity.properties or {},
                     doc_id=doc_id
                 )
 
@@ -260,7 +260,7 @@ class Neo4jManager:
         """存储实体并与文档关联"""
         with self.driver.session() as session:
             for entity in entities:
-                self.store_entitie(entity, doc_id)
+                self.store_entity(entity, doc_id)
 
     def store_relationships(self, relationships: List[Relationship], doc_id: str):
         """存储关系"""
@@ -860,7 +860,7 @@ async def rebuild_document_relationships(data: RebuildIndexInput):
             )
 
         # 3. 分块并重新提取实体关系并返回
-        return {"success": chunk_process(content,data.doc_id,True), "message": "文档实体和关系已重建"}
+        return {"success": chunk_process(process_text_file(content), data.doc_id, rebuilder=True), "message": "文档实体和关系已重建"}
 
     except HTTPException:
         raise
@@ -868,7 +868,7 @@ async def rebuild_document_relationships(data: RebuildIndexInput):
         logger.error(f"文档实体和关系重建失败: {e}") 
         raise HTTPException(status_code=500, detail=str(e))
     
-def chunk_process(paragraphs: List[Dict], doc_id: str, rebuider=False):
+def chunk_process(paragraphs: List[Dict], doc_id: str, rebuilder=False):
     if not graph_rag or not graph_rag.neo4j_manager:
         raise HTTPException(status_code=500, detail="系统未初始化")
 
@@ -890,14 +890,14 @@ def chunk_process(paragraphs: List[Dict], doc_id: str, rebuider=False):
         entities, relationships = graph_rag.text_processor.extract_entities_and_relations(chunk_text)
         if entities:
             for ent in entities:
-                ent.metadata = {**ent.metadata, **chunk_meta} if hasattr(ent, "metadata") else chunk_meta
+                ent.properties = {**ent.properties, **chunk_meta} if hasattr(ent, "properties") else chunk_meta
             graph_rag.neo4j_manager.store_entities(entities, doc_id)
-            logger.info(f"{'[重建索引]' if rebuider else ''} 第{i}块提取到 {len(entities)} 个实体")
+            logger.info(f"{'[重建索引]' if rebuilder else ''} 第{i}块提取到 {len(entities)} 个实体")
 
         if relationships:
             graph_rag.neo4j_manager.store_relationships(relationships, doc_id)
-            logger.info(f"{'[重建索引]' if rebuider else ''} 第{i}块提取到 {len(relationships)} 个关系")
-    logger.info(f"{'[重建索引]' if rebuider else ''} 文档被分为 {len(chunks)} 块")
+            logger.info(f"{'[重建索引]' if rebuilder else ''} 第{i}块提取到 {len(relationships)} 个关系")
+    logger.info(f"{'[重建索引]' if rebuilder else ''} 文档被分为 {len(chunks)} 块")
     return True
 
 
@@ -991,7 +991,7 @@ def get_entity_node(name: str):
                 result = session.run("""
                     MATCH (e:Entity)
                     WHERE toLower(e.name) CONTAINS toLower($name)
-                    RETURN id(e) AS node_id, e.name AS name, e.type AS type, e.properties AS properties
+                    RETURN id(e) AS node_id, e.name AS name, e.type AS type, properties(e) AS properties
                     ORDER BY size(e.name)
                     LIMIT 1
                 """, name=name)
@@ -1044,25 +1044,13 @@ async def get_centered_graph(node_id: str):
 
                 RETURN {
                     nodes: [node IN limitedNodes WHERE node IS NOT NULL | {
-                        id: 
-                            CASE 
-                                WHEN node.id IS NOT NULL THEN node.id
-                                ELSE node.name + "_" + COALESCE(node.source_doc, "")
-                            END,
+                        id: coalesce(node.id, node.name),
                         label: coalesce(node.title, node.name),
                         type: coalesce(node.type, labels(node)[0])
                     }],
                     links: [rel IN validRels WHERE rel IS NOT NULL | {
-                        source: 
-                            CASE 
-                                WHEN startNode(rel).id IS NOT NULL THEN startNode(rel).id
-                                ELSE startNode(rel).name + "_" + COALESCE(startNode(rel).source_doc, "")
-                            END,
-                        target: 
-                            CASE 
-                                WHEN endNode(rel).id IS NOT NULL THEN endNode(rel).id
-                                ELSE endNode(rel).name + "_" + COALESCE(endNode(rel).source_doc, "")
-                            END,
+                        source: coalesce(startNode(rel).id, startNode(rel).name),
+                        target: coalesce(endNode(rel).id, endNode(rel).name),
                         type: type(rel)
                     }]
                 } AS graph
